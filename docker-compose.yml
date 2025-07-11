@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  builder:
+    build: ./builder
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./packages.txt:/work/packages.txt:ro      # список пакетов
+      - ./output:/work/output                     # собранные образы
+    environment:
+      # целевая платформа по умолчанию, можно переопределить
+      - OPENWRT_RELEASE=23.05.3
+      - TARGET=x86
+      - SUBTARGET=64
+      - PROFILE=generic
+      # размер /dev/sda2 в MiB (1024MiB = 1 ГБ)
+      - ROOTFS_SIZE=1024
+      - JOBS=4
+    # command: ["/work/build-image.sh"]
+    command: bash

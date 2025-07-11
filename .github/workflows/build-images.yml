@@ -1,0 +1,42 @@
+name: Build OpenWrt Images
+
+on:
+  push:
+    tags:
+      - "v*.*.*"      # запуск при создании тега версии
+
+env:
+  # переиспользуем дефолты, можно переопределять в Secrets/Variables
+  OPENWRT_RELEASE: 23.05.3
+  TARGET: x86
+  SUBTARGET: 64
+  PROFILE: generic
+  ROOTFS_SIZE: 1024
+  JOBS: 4            # меньше потоков = стабильнее CI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build builder image
+        run: docker compose build
+
+      - name: Build OpenWrt images
+        run: docker compose run --rm -e JOBS=$JOBS builder
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-images
+          path: output/*
+
+      - name: Create GitHub Release & attach images
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/*
