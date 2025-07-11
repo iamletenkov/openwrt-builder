@@ -42,10 +42,11 @@ popd >/dev/null
 if [[ ! -d "$IB_DIR" ]]; then
   echo "→ Fetching ImageBuilder…"
   curl -Lf \
-    "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.xz" \
-    -o /tmp/ib.tar.xz
-  tar -xf /tmp/ib.tar.xz
+    "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst" \
+    -o /tmp/ib.tar.zst
+  tar -I unzstd -xf /tmp/ib.tar.zst
 fi
+
 
 # ---- 3. кладём ipk в IB ----------------------------------------------------
 mkdir -p "$IB_DIR/packages/custom"
