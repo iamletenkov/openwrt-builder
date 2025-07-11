@@ -71,7 +71,8 @@ pushd "$IB_DIR" >/dev/null
        ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
        EXTRA_IMAGE_NAME="custom" \
        BOOTOPTS="ds=nocloud" \
-       BIN_DIR=/work/output
+       BIN_DIR=/work/output \
+       V=s 
 popd >/dev/null
 
 echo -e "
