@@ -1,3 +1,4 @@
+# --- базовые утилиты/ФС ---
 block-mount
 parted
 losetup
@@ -5,16 +6,24 @@ resize2fs
 blkid
 lsblk
 fdisk
+kmod-fs-vfat
+kmod-fs-isofs     # ISO9660 для /dev/sr0
 
+# --- виртуализация / qemu ---
 qemu-bridge-helper
 qemu-ga 
-kmod-fs-vfat
 
+# --- доступ по SSH ---
 openssh-server
 openssh-sftp-server
 
+# --- Wi-Fi / hostapd ---
 hostapd-openssl
 wpa-supplicant-openssl
+
+# --- LuCI + UI пакеты ---
+luci-theme-material
+luci-app-acl
 luci-app-acme
 luci-app-advanced-reboot
 luci-app-commands
@@ -22,39 +31,30 @@ luci-app-dcwapd
 luci-app-ddns
 luci-app-firewall
 luci-app-https-dns-proxy
-dhcpcd 
+luci-app-wol 
+luci-lib-httpclient
 
+# --- мониторинг / utils ---
 usbutils
 pciutils 
 btop
 nano
 htop
 logger
-
 curl
 ca-certificates
 collectd-mod-dhcpleases 
 
-luci-theme-material 
-
-luci-app-acl
-luci-app-wol 
-luci-lib-httpclient 
-
-
+# --- MQTT ---
 mosquitto-ssl
 mosquitto-client-ssl
 libmosquitto-ssl
 luci-app-mosquitto 
 
-
+# --- VPN / security ---
 openvpn-openssl
 openvpn-easy-rsa
 luci-app-openvpn
-
 wireguard-tools
 luci-proto-wireguard
-
 luci-app-libreswan
-
-
