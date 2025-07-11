@@ -16,9 +16,9 @@ IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86
 if [[ ! -d "$SDK_DIR" ]]; then
   echo "→ Fetching OpenWrt SDK… [${OPENWRT_RELEASE}]"
 
-  echo "URL: https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
-  curl -L "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
-  tar -xf /tmp/sdk.tar.xz
+  echo "URL: https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" -o /tmp/sdk.tar.zst
+  curl -L "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" -o /tmp/sdk.tar.zst
+  tar -xf /tmp/sdk.tar.zst
 fi
 
 pushd "$SDK_DIR" >/dev/null
