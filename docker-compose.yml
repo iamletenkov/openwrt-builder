@@ -6,7 +6,7 @@ services:
       args:
         OPENWRT_RELEASE: ${OPENWRT_RELEASE:-24.10.1}
         TARGET: ${TARGET:-x86}
-        SUBTARGET: ${SUBTARGET-x64}
+        SUBTARGET: ${SUBTARGET-64}
     command: ["/work/build-image.sh"]      # запустит сам скрипт
     environment:
       OPENWRT_RELEASE: ${OPENWRT_RELEASE}
