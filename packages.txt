@@ -9,7 +9,6 @@ fdisk
 qemu-bridge-helper
 qemu-ga 
 kmod-fs-vfat
-kmod-fs-iso9660
 
 openssh-server
 openssh-sftp-server
