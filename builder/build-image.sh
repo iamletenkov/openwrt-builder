@@ -27,7 +27,7 @@ pushd "$SDK_DIR" >/dev/null
   fi
   ./scripts/feeds update -a
   ./scripts/feeds install -a
-  ./scripts/feeds install -p rc.cloud
+  ./scripts/feeds install -p cloud rc.cloud
 
   make defconfig
   make -j"$JOBS" package/rc.cloud/compile
