@@ -22,7 +22,7 @@ fi
 
 pushd "$SDK_DIR" >/dev/null
   # подключаем внешний фид с rc.cloud
-  if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
+  if ! grep -q iamletenkov/openwrt-packages feeds.conf.default; then
     echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" >> feeds.conf.default
   fi
   ./scripts/feeds update -a
@@ -54,9 +54,10 @@ cp rc.cloud_*_*.ipk "$IB_DIR/packages/custom/"
 sed -i 's#https://downloads.openwrt.org#http://downloads.openwrt.org#g' "$IB_DIR/repositories.conf"
 
 # ---------- 5. Готовим список пакетов ----------
-readarray -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
+# readarray -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
+# PKG_ARRAY=("${PKG_ARRAY[@]/ip-tiny}")
 
-# Устраняем конфликт ip-full ↔ ip-tiny (по‑умолчанию уже есть ip-full)
+mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
 PKG_ARRAY=("${PKG_ARRAY[@]/ip-tiny}")
 
 PKGS="rc.cloud ${PKG_ARRAY[*]}"
