@@ -10,7 +10,12 @@ parted
 qemu-bridge-helper
 qemu-ga 
 block-mount
+kmod-fs-vfat
+kmod-fs-iso9660
 parted
+
+openssh-server
+openssh-sftp-server
 
 hostapd-openssl
 wpa-supplicant-openssl
