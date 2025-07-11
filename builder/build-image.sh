@@ -23,7 +23,7 @@ fi
 pushd "$SDK_DIR" >/dev/null
   # подключаем внешний фид с rc.cloud
   if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
-    echo "src-git cloud https://github.com/dtroyer/openwrt-packages.git" >> feeds.conf.default
+    echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" >> feeds.conf.default
   fi
   ./scripts/feeds update -a
   ./scripts/feeds install -a
