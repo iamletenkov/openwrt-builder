@@ -16,5 +16,5 @@ services:
       # размер /dev/sda2 в MiB (1024MiB = 1 ГБ)
       - ROOTFS_SIZE=1024
       - JOBS=4
-    # command: ["/work/build-image.sh"]
-    command: bash
+    command: ["/work/build-image.sh"]
+    # command: bash
