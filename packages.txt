@@ -5,14 +5,11 @@ resize2fs
 blkid
 lsblk
 fdisk
-parted
 
 qemu-bridge-helper
 qemu-ga 
-block-mount
 kmod-fs-vfat
 kmod-fs-iso9660
-parted
 
 openssh-server
 openssh-sftp-server
@@ -46,7 +43,6 @@ luci-app-wol
 luci-lib-httpclient 
 
 
-openssh-sftp-server
 mosquitto-ssl
 mosquitto-client-ssl
 libmosquitto-ssl

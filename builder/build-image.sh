@@ -1,32 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---- настраиваемые переменные ---------------------------------------------
+# ----‑ Переменные, которые можно переопределить из compose ----
 OPENWRT_RELEASE=${OPENWRT_RELEASE:-24.10.1}
 TARGET=${TARGET:-x86}
 SUBTARGET=${SUBTARGET:-64}
 PROFILE=${PROFILE:-generic}
-ROOTFS_SIZE=${ROOTFS_SIZE:-1024}        # MiB
-JOBS=${JOBS:-$(nproc)}                  # параллельных потоков
+ROOTFS_SIZE=${ROOTFS_SIZE:-1024}   # MiB
+JOBS=${JOBS:-$(nproc)}             # параллельных потоков
 
 SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64"
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
 
-# ---- 1. скачиваем SDK и собираем rc.cloud ----------------------------------
+# ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
 if [[ ! -d "$SDK_DIR" ]]; then
-  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst"
-  echo "→ Fetching OpenWrt SDK… [${url}]"
-  curl -Lf \
-    $url \
-    -o /tmp/sdk.tar.zst
+  echo "→ Fetching OpenWrt SDK…"
+  curl -Lf "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" \
+       -o /tmp/sdk.tar.zst
   tar -I unzstd -xf /tmp/sdk.tar.zst
 fi
 
 pushd "$SDK_DIR" >/dev/null
-  # внешние фиды
+  # подключаем внешний фид с rc.cloud
   if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
-    echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" \
-      >> feeds.conf.default
+    echo "src-git cloud https://github.com/dtroyer/openwrt-packages.git" >> feeds.conf.default
   fi
   ./scripts/feeds update -a
   ./scripts/feeds install -a
@@ -39,31 +36,31 @@ pushd "$SDK_DIR" >/dev/null
   cp "$IPK" /work/
 popd >/dev/null
 
-# ---- 2. скачиваем ImageBuilder --------------------------------------------
+# ---------- 2. Скачиваем ImageBuilder ----------
 if [[ ! -d "$IB_DIR" ]]; then
-  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
-  echo "→ Fetching ImageBuilder… [${url}]"
-  curl -Lf \
-    $url \
-    -o /tmp/ib.tar.zst
-  tar -I unzstd -xf /tmp/ib.tar.zst
+  echo "→ Fetching ImageBuilder…"
+  curl -Lf "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.xz" \
+       -o /tmp/ib.tar.xz
+  tar -xf /tmp/ib.tar.xz
 fi
 
-
-# ---- 3. кладём ipk в IB ----------------------------------------------------
+# ---------- 3. Кладём ipk в каталог пакетов IB ----------
 mkdir -p "$IB_DIR/packages/custom"
 cp rc.cloud_*_*.ipk "$IB_DIR/packages/custom/"
 
-# ---- 4. правим репозитории на HTTP (быстрее/IPv4-only) ---------------------
-sed -i 's#https://downloads.openwrt.org#http://downloads.openwrt.org#g' \
-       "$IB_DIR/repositories.conf"
+# ---------- 4. Правим репозитории (HTTPS→HTTP, IPv4‑only) ----------
+sed -i 's#https://downloads.openwrt.org#http://downloads.openwrt.org#g' "$IB_DIR/repositories.conf"
 
-# ---- 5. формируем список пакетов ------------------------------------------
-PKGS=$(grep -Ev '^\s*(#|$)' /work/packages.txt | tr '\n' ' ')
-PKGS="rc.cloud $PKGS"
+# ---------- 5. Готовим список пакетов ----------
+readarray -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
+
+# Устраняем конфликт ip-full ↔ ip-tiny (по‑умолчанию уже есть ip-full)
+PKG_ARRAY=("${PKG_ARRAY[@]/ip-tiny}")
+
+PKGS="rc.cloud ${PKG_ARRAY[*]}"
 echo "→ Packages: $PKGS"
 
-# ---- 6. собираем образ -----------------------------------------------------
+# ---------- 6. Сборка образов ----------
 pushd "$IB_DIR" >/dev/null
   make -j"$JOBS" image \
        PROFILE="$PROFILE" \
@@ -73,4 +70,5 @@ pushd "$IB_DIR" >/dev/null
        BIN_DIR=/work/output
 popd >/dev/null
 
-echo -e "\n✔ Build finished. Check ./output for images."
+echo -e "
+✔ Build finished. Check ./output for images."
