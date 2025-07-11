@@ -65,14 +65,14 @@ echo "→ Packages: $PKGS"
 
 # ---------- 6. Сборка образов ----------
 pushd "$IB_DIR" >/dev/null
-  make -j"$JOBS" image \
+  make -j"$JOBS" image V=s \
        PROFILE="$PROFILE" \
        PACKAGES="$PKGS" \
+       DOWNLOAD_PKGS=1 \
        ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
        EXTRA_IMAGE_NAME="custom" \
        BOOTOPTS="ds=nocloud" \
-       BIN_DIR=/work/output \
-       V=s 
+       BIN_DIR=/work/output 
 popd >/dev/null
 
 echo -e "
