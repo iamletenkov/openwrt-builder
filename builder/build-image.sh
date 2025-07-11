@@ -38,10 +38,12 @@ popd >/dev/null
 
 # ---------- 2. Скачиваем ImageBuilder ----------
 if [[ ! -d "$IB_DIR" ]]; then
-  echo "→ Fetching ImageBuilder…"
-  curl -Lf "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.xz" \
-       -o /tmp/ib.tar.xz
-  tar -xf /tmp/ib.tar.xz
+  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
+  echo "→ Fetching ImageBuilder… [${url}]"
+  curl -Lf \
+    $url \
+    -o /tmp/ib.tar.zst
+  tar -I unzstd -xf /tmp/ib.tar.zst
 fi
 
 # ---------- 3. Кладём ipk в каталог пакетов IB ----------
@@ -67,6 +69,7 @@ pushd "$IB_DIR" >/dev/null
        PACKAGES="$PKGS" \
        ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
        EXTRA_IMAGE_NAME="custom" \
+       BOOTOPTS="ds=nocloud" \
        BIN_DIR=/work/output
 popd >/dev/null
 

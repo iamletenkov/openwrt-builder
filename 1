@@ -1,0 +1,671 @@
+openwrt_builder
+├── .github
+│   └── workflows
+│       └── build-images.yml
+├── .gitignore
+├── 1
+├── README.md
+├── builder
+│   ├── Dockerfile
+│   └── build-image.sh
+├── docker-compose.yml
+├── output
+│   ├── openwrt-23.05.3-custom-x86-64-generic-ext4-combined-efi.img.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic-ext4-combined.img.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic-ext4-rootfs.img.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic-kernel.bin
+│   ├── openwrt-23.05.3-custom-x86-64-generic-rootfs.tar.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic-squashfs-combined-efi.img.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic-squashfs-combined.img.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic-squashfs-rootfs.img.gz
+│   ├── openwrt-23.05.3-custom-x86-64-generic.manifest
+│   ├── profiles.json
+│   └── sha256sums
+└── packages.txt
+
+
+# .github/workflows/build-images.yml
+name: Build OpenWrt Images
+
+permissions:
+  contents: write
+  packages: read
+
+on:
+  push:
+    tags:
+      - "v*.*.*"      # запуск при создании тега версии
+
+env:
+  # переиспользуем дефолты, можно переопределять в Secrets/Variables
+  OPENWRT_RELEASE: 24.10.1
+  TARGET: x86
+  SUBTARGET: 64
+  PROFILE: generic
+  ROOTFS_SIZE: 1024
+  JOBS: 4            # меньше потоков = стабильнее CI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build builder image
+        run: docker compose build
+
+      - name: Build OpenWrt images
+        run: docker compose run --rm builder
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-images
+          path: output/*
+
+      - name: Create GitHub Release & attach images
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/*
+
+# .gitignore
+output
+
+# 1
+
+
+# README.md
+# Как пользоваться проектом
+
+0. **Заполните `packages.txt`.** По одному пакету в строке, без версий. Комментарии допускаются (# …).
+1. `docker compose build` – соберёт слой с SDK и ImageBuilder.
+2. `docker compose up` – запустит сборку. Готовые образы появятся в каталоге `output/`.
+
+### Параметры (env)
+| Переменная       | Значение по‑умолчанию | Описание |
+|------------------|----------------------|----------|
+| `OPENWRT_RELEASE`| `23.05.3`            | релиз OpenWrt |
+| `TARGET`         | `x86`                | архитектура (см. targets/) |
+| `SUBTARGET`      | `64`                 | под‑арх. |
+| `PROFILE`        | `generic`            | профиль устройства |
+| `ROOTFS_SIZE`    | `1024`               | размер `/dev/sda2` в MiB |
+
+### rc.cloud – облачная инициализация
+`rc.cloud` – минимальная реализация cloud‑init для OpenWrt. После старта она:
+* читает **metadata service** (EC2, OpenStack, Hetzner и др.) и получает:
+  * `instance-id`, `hostname`, `admin_pass`, SSH‑ключи и др.
+* пишет hostname в UCI‑конфиг и ядро,
+* добавляет SSH‑ключи в `authorized_keys`,
+* может устанавливать пароль root через `admin_pass`.
+
+#### Ключевые опции
+| Способ           | Что делать |
+|------------------|-----------|
+| **Config‑Drive** | Создайте ISO/диск с меткой `config-2`. Внутри положите `meta_data.json`, `user_data` и т.д. Скрипт сам найдёт и примонтирует раздел. |
+| **NoCloud**      | Передайте ядру `ds=nocloud` или `nocloud` – тогда rc.cloud пропустит поиск метаданных. |
+| **Параметр `cloud_tries=N`** | Ограничивает число попыток обращения к метаданным (по‑умолч. 30). |
+
+#### Пример user‑data (cloud‑config)
+
+Скопируйте этот файл в user_data на config‑drive или разместите в metadata‑service.
+
+```yaml
+#cloud-config
+password: "$6$rounds=4096$Gzkw3D…"  # заранее хэшированный
+chpasswd: { expire: False }
+ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3Nz… user@example
+```
+
+
+
+
+### Проверка результата
+
+После загрузки устройства выполните:
+
+```bash
+logread -e rc.cloud
+dmesg | grep "rc.cloud"
+```
+
+Вы должны увидеть, что скрипт получил instance‑id и применил конфигурацию.
+
+
+### Источники и полезные ссылки
+
+rc.cloud: https://github.com/dtroyer/openwrt-packages (raw.githubusercontent.com)
+
+Патч ROOTFS_PARTSIZE: обсуждение в mailing list (lists.infradead.org)
+
+# builder/Dockerfile
+FROM debian:12-slim
+
+# build‑time аргументы позволят кешировать скачивание SDK и ImageBuilder
+ARG OPENWRT_RELEASE
+ARG TARGET
+ARG SUBTARGET
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git make gawk python3 build-essential \
+    libncurses5-dev zlib1g-dev flex gettext libssl-dev \
+    xz-utils zstd file rsync jq patch parted wget unzip python3-distutils && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+# копируем скрипт
+COPY build-image.sh /work/build-image.sh
+RUN chmod +x /work/build-image.sh
+
+# builder/build-image.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---- настраиваемые переменные ---------------------------------------------
+OPENWRT_RELEASE=${OPENWRT_RELEASE:-24.10.1}
+TARGET=${TARGET:-x86}
+SUBTARGET=${SUBTARGET:-64}
+PROFILE=${PROFILE:-generic}
+ROOTFS_SIZE=${ROOTFS_SIZE:-1024}        # MiB
+JOBS=${JOBS:-$(nproc)}                  # параллельных потоков
+
+SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64"
+IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
+
+# ---- 1. скачиваем SDK и собираем rc.cloud ----------------------------------
+if [[ ! -d "$SDK_DIR" ]]; then
+  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst"
+  echo "→ Fetching OpenWrt SDK… [${url}]"
+  curl -Lf \
+    $url \
+    -o /tmp/sdk.tar.zst
+  tar -I unzstd -xf /tmp/sdk.tar.zst
+fi
+
+pushd "$SDK_DIR" >/dev/null
+  # внешние фиды
+  if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
+    echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" \
+      >> feeds.conf.default
+  fi
+  ./scripts/feeds update -a
+  ./scripts/feeds install -a
+  ./scripts/feeds install rc.cloud
+
+  make defconfig
+  make -j"$JOBS" package/rc.cloud/compile
+  IPK=$(find bin/packages -name 'rc.cloud_*_*.ipk' | head -n1)
+  echo "→ built $IPK"
+  cp "$IPK" /work/
+popd >/dev/null
+
+# ---- 2. скачиваем ImageBuilder --------------------------------------------
+if [[ ! -d "$IB_DIR" ]]; then
+  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
+  echo "→ Fetching ImageBuilder… [${url}]"
+  curl -Lf \
+    $url \
+    -o /tmp/ib.tar.zst
+  tar -I unzstd -xf /tmp/ib.tar.zst
+fi
+
+
+# ---- 3. кладём ipk в IB ----------------------------------------------------
+mkdir -p "$IB_DIR/packages/custom"
+cp rc.cloud_*_*.ipk "$IB_DIR/packages/custom/"
+
+# ---- 4. правим репозитории на HTTP (быстрее/IPv4-only) ---------------------
+sed -i 's#https://downloads.openwrt.org#http://downloads.openwrt.org#g' \
+       "$IB_DIR/repositories.conf"
+
+# ---- 5. формируем список пакетов ------------------------------------------
+PKGS=$(grep -Ev '^\s*(#|$)' /work/packages.txt | tr '\n' ' ')
+PKGS="rc.cloud $PKGS"
+echo "→ Packages: $PKGS"
+
+# ---- 6. собираем образ -----------------------------------------------------
+pushd "$IB_DIR" >/dev/null
+  make -j"$JOBS" image \
+       PROFILE="$PROFILE" \
+       PACKAGES="$PKGS" \
+       ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
+       EXTRA_IMAGE_NAME="custom" \
+       BIN_DIR=/work/output
+popd >/dev/null
+
+echo -e "\n✔ Build finished. Check ./output for images."
+
+# docker-compose.yml
+version: "3.9"
+services:
+  builder:
+    build: ./builder
+    volumes:
+      - ./packages.txt:/work/packages.txt:ro      # список пакетов
+      - ./output:/work/output                     # собранные образы
+    environment:
+      # целевая платформа по умолчанию, можно переопределить
+      - OPENWRT_RELEASE=24.10.1
+      - TARGET=x86
+      - SUBTARGET=64
+      - PROFILE=generic
+      # размер /dev/sda2 в MiB (1024MiB = 1 ГБ)
+      - ROOTFS_SIZE=1024
+      #- JOBS=4
+    command: ["/work/build-image.sh"]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-ext4-combined-efi.img.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-ext4-combined.img.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-ext4-rootfs.img.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-kernel.bin
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-rootfs.tar.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-squashfs-combined-efi.img.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-squashfs-combined.img.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic-squashfs-rootfs.img.gz
+[Binary file]
+
+# output/openwrt-23.05.3-custom-x86-64-generic.manifest
+acme - 4.0.0
+acme-acmesh - 3.0.7-2
+acme-common - 1.0.4-2
+base-files - 1554-r23809-234f1a2efa
+blkid - 2.39-2
+block-mount - 2023-02-28-bfe882d5-1
+bnx2-firmware - 20230804-1
+btop - 1.4.3-2
+busybox - 1.36.1-1
+cJSON - 1.7.15-3
+ca-bundle - 20241223-1
+ca-certificates - 20241223-1
+cgi-io - 2022-08-10-901b0f04-21
+collectd - 5.12.0-49
+collectd-mod-dhcpleases - 5.12.0-49
+curl - 8.7.1-r1
+dcwapd - 1.1.0-4
+ddns-scripts - 2.8.2-43
+ddns-scripts-services - 2.8.2-43
+dhcpcd - 9.4.1-1
+dnsmasq - 2.90-2
+dropbear - 2022.82-6
+e2fsprogs - 1.47.0-2
+etherwake - 1.09-5
+fdisk - 2.39-2
+firewall4 - 2023-09-01-598d9fbb-1
+fstools - 2023-02-28-bfe882d5-1
+fwtool - 2019-11-12-8f7fe925-1
+getrandom - 2022-08-13-4c7b720b-2
+glib2 - 2.74.7-1
+grub2-bios-setup - 2.06-5
+hostapd-common - 2023-09-08-e5ccbfc6-8
+hostapd-openssl - 2023-09-08-e5ccbfc6-8
+htop - 3.3.0-1
+https-dns-proxy - 2023.12.26-1
+ip-full - 6.3.0-1
+iptables-mod-ipsec - 1.8.8-2
+iw - 5.19-1
+iwinfo - 2023-07-01-ca79f641-1
+jansson4 - 2.14-3
+jq - 1.6-2
+jshn - 2023-05-23-75a3b870-1
+jsonfilter - 2025-04-18-8a86fb78-1
+kernel - 5.15.150-1-e496746edd89318b9810e48e36a8bd9c
+kmod-amazon-ena - 5.15.150-1
+kmod-amd-xgbe - 5.15.150-1
+kmod-bnx2 - 5.15.150-1
+kmod-br-netfilter - 5.15.150-1
+kmod-button-hotplug - 5.15.150-3
+kmod-cfg80211 - 5.15.150+6.1.24-3
+kmod-crypto-acompress - 5.15.150-1
+kmod-crypto-aead - 5.15.150-1
+kmod-crypto-authenc - 5.15.150-1
+kmod-crypto-cbc - 5.15.150-1
+kmod-crypto-crc32c - 5.15.150-1
+kmod-crypto-ctr - 5.15.150-1
+kmod-crypto-deflate - 5.15.150-1
+kmod-crypto-des - 5.15.150-1
+kmod-crypto-echainiv - 5.15.150-1
+kmod-crypto-gcm - 5.15.150-1
+kmod-crypto-gf128 - 5.15.150-1
+kmod-crypto-ghash - 5.15.150-1
+kmod-crypto-hash - 5.15.150-1
+kmod-crypto-hmac - 5.15.150-1
+kmod-crypto-kpp - 5.15.150-1
+kmod-crypto-lib-chacha20 - 5.15.150-1
+kmod-crypto-lib-chacha20poly1305 - 5.15.150-1
+kmod-crypto-lib-curve25519 - 5.15.150-1
+kmod-crypto-lib-poly1305 - 5.15.150-1
+kmod-crypto-manager - 5.15.150-1
+kmod-crypto-md5 - 5.15.150-1
+kmod-crypto-null - 5.15.150-1
+kmod-crypto-rng - 5.15.150-1
+kmod-crypto-seqiv - 5.15.150-1
+kmod-crypto-sha1 - 5.15.150-1
+kmod-crypto-sha512 - 5.15.150-1
+kmod-e1000 - 5.15.150-1
+kmod-e1000e - 5.15.150-1
+kmod-forcedeth - 5.15.150-1
+kmod-fs-vfat - 5.15.150-1
+kmod-hwmon-core - 5.15.150-1
+kmod-i2c-algo-bit - 5.15.150-1
+kmod-i2c-core - 5.15.150-1
+kmod-igb - 5.15.150-1
+kmod-igc - 5.15.150-1
+kmod-input-core - 5.15.150-1
+kmod-ip-vti - 5.15.150-1
+kmod-ip6-tunnel - 5.15.150-1
+kmod-ip6-vti - 5.15.150-1
+kmod-ipsec - 5.15.150-1
+kmod-ipsec4 - 5.15.150-1
+kmod-ipsec6 - 5.15.150-1
+kmod-ipt-core - 5.15.150-1
+kmod-ipt-ipsec - 5.15.150-1
+kmod-iptunnel - 5.15.150-1
+kmod-iptunnel4 - 5.15.150-1
+kmod-iptunnel6 - 5.15.150-1
+kmod-ixgbe - 5.15.150-1
+kmod-lib-crc-ccitt - 5.15.150-1
+kmod-lib-crc32c - 5.15.150-1
+kmod-lib-zlib-deflate - 5.15.150-1
+kmod-lib-zlib-inflate - 5.15.150-1
+kmod-libphy - 5.15.150-1
+kmod-macremapper - 5.15.150-x86-2
+kmod-mdio - 5.15.150-1
+kmod-mdio-devres - 5.15.150-1
+kmod-mii - 5.15.150-1
+kmod-nf-conntrack - 5.15.150-1
+kmod-nf-conntrack6 - 5.15.150-1
+kmod-nf-flow - 5.15.150-1
+kmod-nf-ipt - 5.15.150-1
+kmod-nf-log - 5.15.150-1
+kmod-nf-log6 - 5.15.150-1
+kmod-nf-nat - 5.15.150-1
+kmod-nf-reject - 5.15.150-1
+kmod-nf-reject6 - 5.15.150-1
+kmod-nfnetlink - 5.15.150-1
+kmod-nft-core - 5.15.150-1
+kmod-nft-fib - 5.15.150-1
+kmod-nft-nat - 5.15.150-1
+kmod-nft-offload - 5.15.150-1
+kmod-nls-base - 5.15.150-1
+kmod-nls-cp437 - 5.15.150-1
+kmod-nls-iso8859-1 - 5.15.150-1
+kmod-nls-utf8 - 5.15.150-1
+kmod-phy-realtek - 5.15.150-1
+kmod-ppp - 5.15.150-1
+kmod-pppoe - 5.15.150-1
+kmod-pppox - 5.15.150-1
+kmod-pps - 5.15.150-1
+kmod-ptp - 5.15.150-1
+kmod-r8169 - 5.15.150-1
+kmod-slhc - 5.15.150-1
+kmod-tg3 - 5.15.150-1
+kmod-tun - 5.15.150-1
+kmod-udptunnel4 - 5.15.150-1
+kmod-udptunnel6 - 5.15.150-1
+kmod-wireguard - 5.15.150-1
+kmod-xfrm-interface - 5.15.150-1
+libatomic1 - 12.3.0-4
+libattr - 2.5.1-1
+libblkid1 - 2.39-2
+libblobmsg-json20230523 - 2023-05-23-75a3b870-1
+libbpf1 - 1.2.2-1
+libc - 1.2.4-4
+libcap - 2.69-1
+libcap-ng - 0.8.3-2
+libcares - 1.27.0-1
+libcomerr0 - 1.47.0-2
+libcurl4 - 8.7.1-r1
+libdcwproto - 1.1.0-1
+libdcwsocket - 1.1.0-2
+libelf1 - 0.189-1
+libev - 4.33-2
+libevdev - 1.13.0-1
+libevent2-7 - 2.1.12-1
+libevent2-core7 - 2.1.12-1
+libevent2-pthreads7 - 2.1.12-1
+libext2fs2 - 1.47.0-2
+libf2fs6 - 1.16.0-1
+libfdisk1 - 2.39-2
+libffi - 3.4.2-2
+libgcc1 - 12.3.0-4
+libiwinfo-data - 2023-07-01-ca79f641-1
+libiwinfo20230701 - 2023-07-01-ca79f641-1
+libjson-c5 - 0.16-3
+libjson-script20230523 - 2023-05-23-75a3b870-1
+libkmod - 31-1
+libldns - 1.8.3-1
+libltdl7 - 2.4.7-1
+liblua5.1.5 - 5.1.5-11
+liblucihttp-lua - 2023-03-15-9b5b683f-1
+liblucihttp-ucode - 2023-03-15-9b5b683f-1
+liblucihttp0 - 2023-03-15-9b5b683f-1
+liblzo2 - 2.10-4
+libmbedtls12 - 2.28.10-1
+libmnl0 - 1.0.5-1
+libmosquitto-ssl - 2.0.18-2
+libmount1 - 2.39-2
+libncurses6 - 6.4-2
+libnftnl11 - 1.2.6-1
+libnghttp2-14 - 1.57.0-1
+libnl-tiny1 - 2023-07-27-bc92a280-1
+libnss - 3.89.1-1
+libopenssl-conf - 3.0.16-1
+libopenssl-legacy - 3.0.16-1
+libopenssl3 - 3.0.16-1
+libparted - 3.6-1
+libpci - 3.10.0-1
+libpcre2 - 10.42-1
+libpthread - 1.2.4-4
+libreadline8 - 8.2-1
+libreswan - 4.12-1
+librt - 1.2.4-4
+libsmartcols1 - 2.39-2
+libsqlite3-0 - 3410200-1
+libss2 - 1.47.0-2
+libstdcpp6 - 12.3.0-4
+libubox20230523 - 2023-05-23-75a3b870-1
+libubus-lua - 2023-06-05-f787c97b-1
+libubus20230605 - 2023-06-05-f787c97b-1
+libuci20130104 - 2023-08-10-5781664d-1
+libuclient20201210 - 2023-04-13-007d9454-1
+libucode20230711 - 2024-07-11-1a8a0bcf-3
+libudev-zero - 1.0.1-1
+libunbound - 1.20.0-1
+libusb-1.0-0 - 1.0.26-3
+libustream-mbedtls20201210 - 2023-02-25-498f6e26-1
+libuuid1 - 2.39-2
+libwebsockets-openssl - 4.3.2-2
+libxtables12 - 1.8.8-2
+logd - 2022-08-13-4c7b720b-2
+logger - 2.39-2
+losetup - 2.39-2
+lsblk - 2.39-2
+lua - 5.1.5-11
+luci-app-acl - git-25.176.69269-6e21c0e
+luci-app-acme - git-25.176.69269-6e21c0e
+luci-app-advanced-reboot - 1.0.1
+luci-app-commands - git-25.176.69269-6e21c0e
+luci-app-dcwapd - git-25.176.69269-6e21c0e
+luci-app-ddns - git-25.176.69269-6e21c0e
+luci-app-firewall - git-25.176.69269-6e21c0e
+luci-app-https-dns-proxy - 2023.12.26
+luci-app-libreswan - git-25.176.69269-6e21c0e
+luci-app-mosquitto - git-25.176.69269-6e21c0e
+luci-app-openvpn - git-25.176.69269-6e21c0e
+luci-app-wol - git-25.176.69269-6e21c0e
+luci-base - git-25.176.69269-6e21c0e
+luci-compat - git-25.176.69269-6e21c0e
+luci-lib-base - git-25.176.69269-6e21c0e
+luci-lib-httpclient - git-25.176.69269-6e21c0e
+luci-lib-httpprotoutils - git-25.176.69269-6e21c0e
+luci-lib-ip - git-25.176.69269-6e21c0e
+luci-lib-jsonc - git-25.176.69269-6e21c0e
+luci-lib-nixio - git-25.176.69269-6e21c0e
+luci-lib-uqr - git-25.176.69269-6e21c0e
+luci-lua-runtime - git-25.176.69269-6e21c0e
+luci-proto-wireguard - git-25.176.69269-6e21c0e
+luci-theme-material - git-25.176.69269-6e21c0e
+mkf2fs - 1.16.0-1
+mosquitto-client-ssl - 2.0.18-2
+mosquitto-ssl - 2.0.18-2
+mrmctl - 1.1.0-1
+mtd - 26
+nano - 8.5-1
+netifd - 2024-01-04-c18cc79d-2
+nftables-json - 1.0.8-1
+nspr - 4.35-2
+nss-utils - 3.89.1-1
+odhcp6c - 2023-05-12-bcd28363-20
+odhcpd-ipv6only - 2023-10-24-d8118f6e-1
+openssh-sftp-server - 9.8p1-1
+openssl-util - 3.0.16-1
+openvpn-easy-rsa - 3.0.8-4
+openvpn-openssl - 2.5.8-5
+openwrt-keyring - 2022-03-25-62471e69-2
+opkg - 2022-02-24-d038e5b6-2
+parted - 3.6-1
+partx-utils - 2.39-2
+pciids - 0.379-1
+pciutils - 3.10.0-1
+ppp - 2.4.9.git-2021-01-04-4
+ppp-mod-pppoe - 2.4.9.git-2021-01-04-4
+procd - 2023-06-25-2db83655-2
+procd-seccomp - 2023-06-25-2db83655-2
+procd-ujail - 2023-06-25-2db83655-2
+qemu-bridge-helper - 8.0.0-1
+qemu-ga - 8.0.0-1
+r8169-firmware - 20230804-1
+rc.cloud - 0.3-1
+resize2fs - 1.47.0-2
+resolveip - 2
+rpcd - 2023-07-01-c07ab2f9-1
+rpcd-mod-file - 2023-07-01-c07ab2f9-1
+rpcd-mod-luci - 20240305-1
+rpcd-mod-ucode - 2023-07-01-c07ab2f9-1
+socat - 1.7.4.4-1
+terminfo - 6.4-2
+ubox - 2022-08-13-4c7b720b-2
+ubus - 2023-06-05-f787c97b-1
+ubusd - 2023-06-05-f787c97b-1
+uci - 2023-08-10-5781664d-1
+uclient-fetch - 2023-04-13-007d9454-1
+ucode - 2024-07-11-1a8a0bcf-3
+ucode-mod-fs - 2024-07-11-1a8a0bcf-3
+ucode-mod-html - 1
+ucode-mod-lua - 1
+ucode-mod-math - 2024-07-11-1a8a0bcf-3
+ucode-mod-nl80211 - 2024-07-11-1a8a0bcf-3
+ucode-mod-rtnl - 2024-07-11-1a8a0bcf-3
+ucode-mod-ubus - 2024-07-11-1a8a0bcf-3
+ucode-mod-uci - 2024-07-11-1a8a0bcf-3
+ucode-mod-uloop - 2024-07-11-1a8a0bcf-3
+urandom-seed - 3
+urngd - 2023-11-01-44365eb1-1
+usbutils - 014-1
+usign - 2020-05-23-f1f65026-1
+virtio-console-helper - 8.0.0-1
+wget-ssl - 1.21.4-1
+wireguard-tools - 1.0.20210914-2
+wireless-regdb - 2025.02.20-1
+wpa-supplicant-openssl - 2023-09-08-e5ccbfc6-8
+zlib - 1.2.13-1
+
+# output/profiles.json
+{"arch_packages":"x86_64","default_packages":["base-files","busybox","ca-bundle","dnsmasq","dropbear","e2fsprogs","firewall4","fstools","grub2-bios-setup","kmod-button-hotplug","kmod-nft-offload","libc","libgcc","libustream-mbedtls","logd","mkf2fs","mtd","netifd","nftables","odhcp6c","odhcpd-ipv6only","opkg","partx-utils","ppp","ppp-mod-pppoe","procd","procd-seccomp","procd-ujail","uci","uclient-fetch","urandom-seed","urngd"],"metadata_version":1,"profiles":{"generic":{"device_packages":["kmod-amazon-ena","kmod-amd-xgbe","kmod-bnx2","kmod-e1000e","kmod-e1000","kmod-forcedeth","kmod-fs-vfat","kmod-igb","kmod-igc","kmod-ixgbe","kmod-r8169","kmod-tg3"],"image_prefix":"openwrt-23.05.3-custom-x86-64-generic","images":[{"filesystem":"ext4","name":"openwrt-23.05.3-custom-x86-64-generic-ext4-combined.img.gz","sha256":"8b29ea44961a3ce513a5ea84849fdf011465707b67778f99e24e29357f0ee55a","sha256_unsigned":"800b7ff0ae4de308f0e30abb36da4bc1f0f6264ff6b98ca93a42c1c67683be97","type":"combined"},{"filesystem":"squashfs","name":"openwrt-23.05.3-custom-x86-64-generic-squashfs-combined-efi.img.gz","sha256":"80b84af831df5509af43b1975bd94ba44a2d56525a251aaf8dad62263b9ac2a5","sha256_unsigned":"cbdeba9dec8eee042ad8e4d21e844ba876e4a2438418ab32211f84ad8bcf67a8","type":"combined-efi"},{"filesystem":"squashfs","name":"openwrt-23.05.3-custom-x86-64-generic-squashfs-rootfs.img.gz","sha256":"c3bd0ccf4c1e2a5e59408d387b5b2a2b49e6def349e19aa79a08d366cf20818a","sha256_unsigned":"c3bd0ccf4c1e2a5e59408d387b5b2a2b49e6def349e19aa79a08d366cf20818a","type":"rootfs"},{"filesystem":"squashfs","name":"openwrt-23.05.3-custom-x86-64-generic-squashfs-combined.img.gz","sha256":"4747e6bdcc3ef7210f8ac6b964d5c973bc711356bfb440f5bf6a9325f2d73e0a","sha256_unsigned":"83f972e46026aea91741dbacec3a0b437f9a9cd9ca2b8108b341d75c80043eec","type":"combined"},{"filesystem":"ext4","name":"openwrt-23.05.3-custom-x86-64-generic-ext4-rootfs.img.gz","sha256":"bc54e8051392c4f6f1fc7f70a5e59839df01f6df63787d7d8f8342012c152def","sha256_unsigned":"bc54e8051392c4f6f1fc7f70a5e59839df01f6df63787d7d8f8342012c152def","type":"rootfs"},{"filesystem":"ext4","name":"openwrt-23.05.3-custom-x86-64-generic-ext4-combined-efi.img.gz","sha256":"4e231afaba67582d8632ed950db7b9dff99343862690d8a15e2f2d68ae8cc5f2","sha256_unsigned":"29cdada5eb76aa11b6bf8aa02904920c343f7c3d7ef0f10ef7a2fb1b286b2fa5","type":"combined-efi"}],"supported_devices":[],"titles":[{"model":"x86/64","vendor":"Generic"}]}},"source_date_epoch":1711145382,"target":"x86/64","version_code":"r23809-234f1a2efa","version_number":"23.05.3"}
+
+# output/sha256sums
+4e231afaba67582d8632ed950db7b9dff99343862690d8a15e2f2d68ae8cc5f2 *openwrt-23.05.3-custom-x86-64-generic-ext4-combined-efi.img.gz
+8b29ea44961a3ce513a5ea84849fdf011465707b67778f99e24e29357f0ee55a *openwrt-23.05.3-custom-x86-64-generic-ext4-combined.img.gz
+bc54e8051392c4f6f1fc7f70a5e59839df01f6df63787d7d8f8342012c152def *openwrt-23.05.3-custom-x86-64-generic-ext4-rootfs.img.gz
+0324fd5a691fe8dd58ea289db87ce6b39b3f2f2be6d5eb4d9e8039c0759a59f2 *openwrt-23.05.3-custom-x86-64-generic-kernel.bin
+18e20623af88798dcafc0508031f6f9569faed3e46992f76a160408fcd5aa3fc *openwrt-23.05.3-custom-x86-64-generic-rootfs.tar.gz
+80b84af831df5509af43b1975bd94ba44a2d56525a251aaf8dad62263b9ac2a5 *openwrt-23.05.3-custom-x86-64-generic-squashfs-combined-efi.img.gz
+4747e6bdcc3ef7210f8ac6b964d5c973bc711356bfb440f5bf6a9325f2d73e0a *openwrt-23.05.3-custom-x86-64-generic-squashfs-combined.img.gz
+c3bd0ccf4c1e2a5e59408d387b5b2a2b49e6def349e19aa79a08d366cf20818a *openwrt-23.05.3-custom-x86-64-generic-squashfs-rootfs.img.gz
+f43eaba97e8141c5e97138357d2ad04459ce8a4c6e7a6e2e3c26116034becb91 *openwrt-23.05.3-custom-x86-64-generic.manifest
+f96251adc159f51b3b5424cc8d857d5c0113676f161cbd00700413488997b1bd *profiles.json
+
+# packages.txt
+block-mount
+parted
+losetup
+resize2fs
+blkid
+lsblk
+fdisk
+parted
+
+qemu-bridge-helper
+qemu-ga 
+block-mount
+kmod-fs-vfat
+kmod-fs-iso9660
+parted
+
+openssh-server
+openssh-sftp-server
+
+hostapd-openssl
+wpa-supplicant-openssl
+luci-app-acme
+luci-app-advanced-reboot
+luci-app-commands
+luci-app-dcwapd
+luci-app-ddns
+luci-app-firewall
+luci-app-https-dns-proxy
+dhcpcd 
+
+usbutils
+pciutils 
+btop
+nano
+htop
+logger
+
+curl
+ca-certificates
+collectd-mod-dhcpleases 
+
+luci-theme-material 
+
+luci-app-acl
+luci-app-wol 
+luci-lib-httpclient 
+
+
+openssh-sftp-server
+mosquitto-ssl
+mosquitto-client-ssl
+libmosquitto-ssl
+luci-app-mosquitto 
+
+
+openvpn-openssl
+openvpn-easy-rsa
+luci-app-openvpn
+
+wireguard-tools
+luci-proto-wireguard
+
+luci-app-libreswan
+
