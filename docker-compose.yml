@@ -1,8 +1,8 @@
 services:
   builder:
     build:
-      context: .
-      dockerfile: builder/Dockerfile
+      context: builder
+      dockerfile: Dockerfile
       args:
         OPENWRT_RELEASE: ${OPENWRT_RELEASE:-24.10.1}
         TARGET: ${TARGET:-x86}
