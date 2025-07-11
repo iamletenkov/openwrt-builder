@@ -25,7 +25,7 @@ fi
 pushd "$SDK_DIR" >/dev/null
   # внешние фиды
   if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
-    echo "src-git cloud https://github.com/dtroyer/openwrt-packages.git" \
+    echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" \
       >> feeds.conf.default
   fi
   ./scripts/feeds update -a
