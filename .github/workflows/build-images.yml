@@ -1,5 +1,9 @@
 name: Build OpenWrt Images
 
+permissions:
+  contents: write
+  packages: read
+
 on:
   push:
     tags:
@@ -28,7 +32,7 @@ jobs:
         run: docker compose build
 
       - name: Build OpenWrt images
-        run: docker compose run --rm -e JOBS=$JOBS builder
+        run: docker compose run --rm builder
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
