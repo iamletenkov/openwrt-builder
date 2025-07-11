@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ----‑ Переменные, которые можно переопределить из compose ----
-OPENWRT_RELEASE=${OPENWRT_RELEASE:-23.05.3}
+OPENWRT_RELEASE=${OPENWRT_RELEASE:-24.10.1}
 TARGET=${TARGET:-x86}
 SUBTARGET=${SUBTARGET:-64}
 PROFILE=${PROFILE:-generic}
@@ -12,33 +12,33 @@ JOBS=${JOBS:-$(nproc)}             # параллельных потоков
 SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-12.3.0_musl.Linux-x86_64"
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
 
-# # ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
-# if [[ ! -d "$SDK_DIR" ]]; then
-#   echo "→ Fetching OpenWrt SDK…"
-#   curl -L "https://downloads.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
-#   tar -xf /tmp/sdk.tar.xz
-# fi
+# ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
+if [[ ! -d "$SDK_DIR" ]]; then
+  echo "→ Fetching OpenWrt SDK…"
+  curl -L "https://downloads.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
+  tar -xf /tmp/sdk.tar.xz
+fi
 
-# pushd "$SDK_DIR" >/dev/null
-#   # подключаем внешний фид с rc.cloud
-#   if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
-#     echo "src-git cloud https://github.com/dtroyer/openwrt-packages.git" >> feeds.conf.default
-#   fi
-#   ./scripts/feeds update -a
-#   # устанавливаем все пакеты, это создаст каталог package/feeds/* и устранит ошибки ln
-#   ./scripts/feeds install -a
-#   # rc.cloud уже попал в дерево, но на всякий случай гарантируем наличие
-#   ./scripts/feeds install rc.cloud
+pushd "$SDK_DIR" >/dev/null
+  # подключаем внешний фид с rc.cloud
+  if ! grep -q dtroyer/openwrt-packages feeds.conf.default; then
+    echo "src-git cloud https://github.com/dtroyer/openwrt-packages.git" >> feeds.conf.default
+  fi
+  ./scripts/feeds update -a
+  # устанавливаем все пакеты, это создаст каталог package/feeds/* и устранит ошибки ln
+  ./scripts/feeds install -a
+  # rc.cloud уже попал в дерево, но на всякий случай гарантируем наличие
+  ./scripts/feeds install rc.cloud
 
-#   # минимальная конфигурация
-#   make defconfig
-#   # собираем только пакет rc.cloud (секунды)
-#   make package/rc.cloud/compile -j$JOBS
-#   # запоминаем путь к .ipk
-#   IPK=$(find bin/packages -name 'rc.cloud_*_*.ipk' | head -n1)
-#   echo "→ built $IPK"
-#   cp "$IPK" /work/
-# popd >/dev/null
+  # минимальная конфигурация
+  make defconfig
+  # собираем только пакет rc.cloud (секунды)
+  make package/rc.cloud/compile -j$JOBS
+  # запоминаем путь к .ipk
+  IPK=$(find bin/packages -name 'rc.cloud_*_*.ipk' | head -n1)
+  echo "→ built $IPK"
+  cp "$IPK" /work/
+popd >/dev/null
 
 # ---------- 2. Скачиваем ImageBuilder ----------
 if [[ ! -d "$IB_DIR" ]]; then

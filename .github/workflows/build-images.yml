@@ -7,7 +7,7 @@ on:
 
 env:
   # переиспользуем дефолты, можно переопределять в Secrets/Variables
-  OPENWRT_RELEASE: 23.05.3
+  OPENWRT_RELEASE: 24.10.1
   TARGET: x86
   SUBTARGET: 64
   PROFILE: generic
