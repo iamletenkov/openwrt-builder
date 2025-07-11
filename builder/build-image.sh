@@ -9,7 +9,7 @@ PROFILE=${PROFILE:-generic}
 ROOTFS_SIZE=${ROOTFS_SIZE:-1024}   # MiB
 JOBS=${JOBS:-$(nproc)}             # параллельных потоков
 
-SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64"
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
 
 # ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
