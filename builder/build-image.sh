@@ -9,12 +9,13 @@ PROFILE=${PROFILE:-generic}
 ROOTFS_SIZE=${ROOTFS_SIZE:-1024}   # MiB
 JOBS=${JOBS:-$(nproc)}             # параллельных потоков
 
-SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-12.3.0_musl.Linux-x86_64"
+SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64.tar.zst
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
 
 # ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
 if [[ ! -d "$SDK_DIR" ]]; then
   echo "→ Fetching OpenWrt SDK… [${OPENWRT_RELEASE}]"
+
   echo "URL: https://downloads.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
   curl -L "https://downloads.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
   tar -xf /tmp/sdk.tar.xz
