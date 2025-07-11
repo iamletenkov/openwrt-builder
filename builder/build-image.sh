@@ -14,9 +14,10 @@ IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86
 
 # ---- 1. скачиваем SDK и собираем rc.cloud ----------------------------------
 if [[ ! -d "$SDK_DIR" ]]; then
-  echo "→ Fetching OpenWrt SDK…"
+  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst"
+  echo "→ Fetching OpenWrt SDK… [${url}]"
   curl -Lf \
-    "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" \
+    $url \
     -o /tmp/sdk.tar.zst
   tar -I unzstd -xf /tmp/sdk.tar.zst
 fi
@@ -40,9 +41,10 @@ popd >/dev/null
 
 # ---- 2. скачиваем ImageBuilder --------------------------------------------
 if [[ ! -d "$IB_DIR" ]]; then
-  echo "→ Fetching ImageBuilder…"
+  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
+  echo "→ Fetching ImageBuilder… [${url}]"
   curl -Lf \
-    "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst" \
+    $url \
     -o /tmp/ib.tar.zst
   tar -I unzstd -xf /tmp/ib.tar.zst
 fi
