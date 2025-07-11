@@ -15,6 +15,7 @@ IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86
 # ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
 if [[ ! -d "$SDK_DIR" ]]; then
   echo "→ Fetching OpenWrt SDK… [${OPENWRT_RELEASE}]"
+  echo "URL: https://downloads.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
   curl -L "https://downloads.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.xz" -o /tmp/sdk.tar.xz
   tar -xf /tmp/sdk.tar.xz
 fi
