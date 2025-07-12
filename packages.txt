@@ -1,4 +1,6 @@
-# --- базовые утилиты/ФС ---
+############################################################
+# Core system / disk utilities
+############################################################
 block-mount
 parted
 losetup
@@ -7,21 +9,20 @@ blkid
 lsblk
 fdisk
 kmod-fs-vfat
-#kmod-fs-isofs     # ISO9660 для /dev/sr0
 
-# --- виртуализация / qemu ---
-qemu-bridge-helper
-qemu-ga 
-
-# --- доступ по SSH ---
+############################################################
+# Base network services
+############################################################
+uhttpd
+luci-ssl-openssl
 openssh-server
 openssh-sftp-server
-
-# --- Wi-Fi / hostapd ---
 hostapd-openssl
 wpa-supplicant-openssl
 
-# --- LuCI + UI пакеты ---
+############################################################
+# LuCI extras / UI
+############################################################
 luci-theme-material
 luci-app-acl
 luci-app-acme
@@ -31,30 +32,47 @@ luci-app-dcwapd
 luci-app-ddns
 luci-app-firewall
 luci-app-https-dns-proxy
-luci-app-wol 
+luci-app-wol
 luci-lib-httpclient
 
-# --- мониторинг / utils ---
+############################################################
+# Virtualisation / QEMU guests
+############################################################
+qemu-bridge-helper
+qemu-ga
+
+############################################################
+# Monitoring & CLI utilities
+############################################################
 usbutils
-pciutils 
+pciutils
 btop
 nano
 htop
 logger
 curl
 ca-certificates
-collectd-mod-dhcpleases 
+collectd-mod-dhcpleases
 
-# --- MQTT ---
+############################################################
+# Messaging / MQTT stack
+############################################################
 mosquitto-ssl
 mosquitto-client-ssl
 libmosquitto-ssl
-luci-app-mosquitto 
+luci-app-mosquitto
 
-# --- VPN / security ---
+############################################################
+# VPN & security
+############################################################
 openvpn-openssl
 openvpn-easy-rsa
 luci-app-openvpn
 wireguard-tools
 luci-proto-wireguard
 luci-app-libreswan
+
+############################################################
+# cloud‑init replacement (built locally via SDK)
+############################################################
+# rc.cloud                # injected automatically by build‑image.sh

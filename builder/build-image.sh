@@ -6,8 +6,8 @@ OPENWRT_RELEASE=${OPENWRT_RELEASE:-24.10.1}
 TARGET=${TARGET:-x86}
 SUBTARGET=${SUBTARGET:-64}
 PROFILE=${PROFILE:-generic}
-ROOTFS_SIZE=${ROOTFS_SIZE:-1024}   # MiB
-JOBS=${JOBS:-$(nproc)}             # параллельных потоков
+ROOTFS_SIZE=${ROOTFS_SIZE:-512}
+JOBS=${JOBS:-$(nproc)}
 
 SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64"
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
