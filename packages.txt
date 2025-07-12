@@ -7,7 +7,7 @@ blkid
 lsblk
 fdisk
 kmod-fs-vfat
-kmod-fs-isofs     # ISO9660 для /dev/sr0
+#kmod-fs-isofs     # ISO9660 для /dev/sr0
 
 # --- виртуализация / qemu ---
 qemu-bridge-helper
