@@ -9,12 +9,15 @@ blkid
 lsblk
 fdisk
 kmod-fs-vfat
+kmod-fs-ext4
+e2fsprogs
 
 ############################################################
 # Base network services
 ############################################################
 uhttpd
-luci-ssl-openssl
+#luci-ssl-nginx
+luci-ssl
 openssh-server
 openssh-sftp-server
 hostapd-openssl
