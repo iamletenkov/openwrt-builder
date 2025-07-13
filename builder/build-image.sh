@@ -15,19 +15,37 @@ IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86
 # ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
 if [[ ! -d "$SDK_DIR" ]]; then
   echo "→ Fetching OpenWrt SDK…"
-  curl -Lf "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" \
-       -o /tmp/sdk.tar.zst
+  for i in {1..3}; do
+    curl -Lf \
+      "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" \
+      -o /tmp/sdk.tar.zst && break || {
+        echo "SDK download failed ($i). Retrying in 30 s…"
+        sleep 30
+      }
+  done
   tar -I unzstd -xf /tmp/sdk.tar.zst
 fi
 
 pushd "$SDK_DIR" >/dev/null
+
+# ──- Заменяем канонические фиды на зеркала GitHub ─────────────────────────
+sed -i -e 's#https://git.openwrt.org/openwrt/openwrt.git#https://github.com/openwrt/openwrt.git#' \
+       -e 's#https://git.openwrt.org/feed/packages.git#https://github.com/openwrt/packages.git#' \
+       -e 's#https://git.openwrt.org/project/luci.git#https://github.com/openwrt/luci.git#' \
+       -e 's#https://git.openwrt.org/feed/routing.git#https://github.com/openwrt/routing.git#' \
+       -e 's#https://git.openwrt.org/feed/telephony.git#https://github.com/openwrt/telephony.git#' \
+       feeds.conf.default
+
   # подключаем внешний фид с rc.cloud
   if ! grep -q iamletenkov/openwrt-packages feeds.conf.default; then
     echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" >> feeds.conf.default
   fi
+
+
   ./scripts/feeds update -a
   ./scripts/feeds install -a
   ./scripts/feeds install -p cloud rc.cloud
+
 
   make defconfig
   make -j"$JOBS" package/rc.cloud/compile
@@ -40,9 +58,14 @@ popd >/dev/null
 if [[ ! -d "$IB_DIR" ]]; then
   url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
   echo "→ Fetching ImageBuilder… [${url}]"
-  curl -Lf \
-    $url \
-    -o /tmp/ib.tar.zst
+  for i in {1..3}; do
+    curl -Lf \
+      $url \
+      -o /tmp/ib.tar.zst && break || {
+        echo "ImageBuilder download failed ($i). Retrying in 30 s…"
+        sleep 30
+      }
+  done
   tar -I unzstd -xf /tmp/ib.tar.zst
 fi
 
