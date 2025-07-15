@@ -73,16 +73,17 @@ fi
 mkdir -p "$IB_DIR/packages/custom"
 cp rc.cloud_*_*.ipk "$IB_DIR/packages/custom/"
 
-# ---------- 4. Правим репозитории (HTTPS→HTTP, IPv4‑only) ----------
-# sed -i 's#https://downloads.openwrt.org#http://downloads.openwrt.org#g' "$IB_DIR/repositories.conf"
-
 # ---------- 4. Подменяем репозитории на зеркало  ----------
-MIRROR=${MIRROR:-http://mirror.cyberbits.eu/openwrt}
+# По-умолчанию берём пакеты с официального CDN OpenWrt.
+# При необходимости можно переопределить переменной окружения
+#   MIRROR=http://<ваше-зеркало>/openwrt
+MIRROR=${MIRROR:-http://downloads.openwrt.org}
+ 
+ # заменяем все вхождения downloads.openwrt.org →
+ #   ${MIRROR}
+ sed -i "s#https://downloads.openwrt.org#${MIRROR}#g" \
+        "$IB_DIR/repositories.conf"
 
-# заменяем все вхождения downloads.openwrt.org →
-#   http://mirror.cyberbits.eu/openwrt
-sed -i "s#https://downloads.openwrt.org#${MIRROR}#g" \
-       "$IB_DIR/repositories.conf"
 
 # ---------- 5. Готовим список пакетов ----------
 mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
