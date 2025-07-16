@@ -12,7 +12,7 @@ JOBS=${JOBS:-$(nproc)}
 SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64"
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
 
-# ---------- 1. Скачиваем SDK и собираем rc.cloud ----------
+# ---------- 1. Скачиваем SDK и собираем wrt.cloudinit ----------
 if [[ ! -d "$SDK_DIR" ]]; then
   echo "→ Fetching OpenWrt SDK…"
   for i in {1..3}; do
@@ -36,20 +36,20 @@ sed -i -e 's#https://git.openwrt.org/openwrt/openwrt.git#https://github.com/open
        -e 's#https://git.openwrt.org/feed/telephony.git#https://github.com/openwrt/telephony.git#' \
        feeds.conf.default
 
-  # подключаем внешний фид с rc.cloud
+  # подключаем внешний фид с wrt.cloudinit
   if ! grep -q iamletenkov/openwrt-packages feeds.conf.default; then
-    echo "src-git cloud https://github.com/iamletenkov/openwrt-packages.git" >> feeds.conf.default
+    echo "src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git" >> feeds.conf.default
   fi
 
 
   ./scripts/feeds update -a
   ./scripts/feeds install -a
-  ./scripts/feeds install -p cloud rc.cloud
+  ./scripts/feeds install -p cloud wrt.cloudinit
 
 
   make defconfig
-  make -j"$JOBS" package/rc.cloud/compile
-  IPK=$(find bin/packages -name 'rc.cloud_*_*.ipk' | head -n1)
+  make -j"$JOBS" package/wrt.cloudinit/compile
+  IPK=$(find bin/packages -name 'wrt.cloudinit_*_*.ipk' | head -n1)
   echo "→ built $IPK"
   cp "$IPK" /work/
 popd >/dev/null
@@ -71,7 +71,7 @@ fi
 
 # ---------- 3. Кладём ipk в каталог пакетов IB ----------
 mkdir -p "$IB_DIR/packages/custom"
-cp rc.cloud_*_*.ipk "$IB_DIR/packages/custom/"
+cp wrt.cloudinit_*_*.ipk "$IB_DIR/packages/custom/"
 
 # ---------- 4. Подменяем репозитории на зеркало  ----------
 # По-умолчанию берём пакеты с официального CDN OpenWrt.
@@ -89,7 +89,7 @@ MIRROR=${MIRROR:-http://downloads.openwrt.org}
 mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
 PKG_ARRAY=("${PKG_ARRAY[@]/ip-tiny}")
 
-PKGS="rc.cloud ${PKG_ARRAY[*]}"
+PKGS="wrt.cloudinit ${PKG_ARRAY[*]}"
 echo "→ Packages: $PKGS"
 
 # ---------- 6. Сборка образов ----------
