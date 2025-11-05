@@ -36,10 +36,10 @@ sed -i -e 's#https://git.openwrt.org/openwrt/openwrt.git#https://github.com/open
        -e 's#https://git.openwrt.org/feed/telephony.git#https://github.com/openwrt/telephony.git#' \
        feeds.conf.default
 
-  # подключаем внешний фид с wrt.cloudinit
-  if ! grep -q iamletenkov/openwrt-packages feeds.conf.default; then
-    echo "src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git" >> feeds.conf.default
-  fi
+  # подключаем внешний фид с wrt.cloudinit (idempotent)
+  sed -i '/^src-git[[:space:]]\+cloud[[:space:]]\+https:\/\/github.com\/iamletenkov\/openwrt-cloud-init\.git$/d' \
+    feeds.conf.default
+  echo "src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git" >> feeds.conf.default
 
 
   ./scripts/feeds update -a
@@ -117,7 +117,14 @@ if (( ${#img_gz_list[@]} + ${#img_raw_list[@]} > 0 )); then
     qcow2="${raw%.img}.qcow2"
     echo "   • $(basename "$img_gz") → $(basename "$qcow2")"
     if [[ ! -f "$raw" ]]; then
+      set +e
       gzip -dk "$img_gz"
+      status=$?
+      set -e
+      if (( status != 0 && status != 2 )); then
+        echo "   ! gzip failed for $(basename "$img_gz") (exit $status)" >&2
+        exit $status
+      fi
     fi
     qemu-img convert -f raw -O qcow2 "$raw" "$qcow2"
     rm -f "$raw"
