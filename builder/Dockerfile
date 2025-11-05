@@ -8,7 +8,8 @@ ARG SUBTARGET
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git make gawk python3 build-essential \
     libncurses5-dev zlib1g-dev flex gettext libssl-dev \
-    xz-utils zstd file rsync jq patch parted wget unzip python3-distutils && \
+    xz-utils zstd file rsync jq patch parted wget unzip python3-distutils \
+    qemu-utils && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work

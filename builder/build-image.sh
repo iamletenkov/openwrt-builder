@@ -103,5 +103,37 @@ pushd "$IB_DIR" >/dev/null
        BIN_DIR=/work/output 
 popd >/dev/null
 
+# ---------- 7. Конвертируем образы в qcow2 ----------
+shopt -s nullglob
+img_gz_list=(/work/output/*.img.gz)
+img_raw_list=(/work/output/*.img)
+shopt -u nullglob
+
+if (( ${#img_gz_list[@]} + ${#img_raw_list[@]} > 0 )); then
+  echo "→ Converting raw images to qcow2…"
+
+  for img_gz in "${img_gz_list[@]}"; do
+    raw="${img_gz%.gz}"
+    qcow2="${raw%.img}.qcow2"
+    echo "   • $(basename "$img_gz") → $(basename "$qcow2")"
+    if [[ ! -f "$raw" ]]; then
+      gzip -dk "$img_gz"
+    fi
+    qemu-img convert -f raw -O qcow2 "$raw" "$qcow2"
+    rm -f "$raw"
+  done
+
+  # Вдобавок обрабатываем возможные неархивированные .img, которые выдал ImageBuilder
+  for img_raw in "${img_raw_list[@]}"; do
+    # если файл уже удалён (например, после обработки .img.gz) — пропускаем
+    [[ -f "$img_raw" ]] || continue
+    qcow2="${img_raw%.img}.qcow2"
+    echo "   • $(basename "$img_raw") → $(basename "$qcow2")"
+    qemu-img convert -f raw -O qcow2 "$img_raw" "$qcow2"
+  done
+else
+  echo "→ Skipping qcow2 conversion: no .img artifacts found."
+fi
+
 echo -e "
 ✔ Build finished. Check ./output for images."
