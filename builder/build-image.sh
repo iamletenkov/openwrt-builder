@@ -27,7 +27,7 @@ if [[ ! -f "$FEEDS_FILE" ]]; then
   exit 1
 fi
 
-mkdir -p "$FILES_DIR/usr/sbin"
+mkdir -p "$FILES_DIR/usr/sbin" "$FILES_DIR/var/lock"
 echo "→ Installing growpart helper into overlay…"
 wget -q -O "$FILES_DIR/usr/sbin/growpart" "$GROWPART_URL"
 chmod +x "$FILES_DIR/usr/sbin/growpart"
