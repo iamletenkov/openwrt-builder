@@ -9,7 +9,7 @@ build: $(OUTPUT_DIR) $(FILES_DIR)
 	$(DOCKER_COMPOSE) run --rm builder
 
 clean:
-	rm -rf "$(OUTPUT_DIR)"
+	rm -rf "$(OUTPUT_DIR)" files
 
 $(OUTPUT_DIR):
 	mkdir -p "$(OUTPUT_DIR)"
