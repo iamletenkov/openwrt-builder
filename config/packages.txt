@@ -9,6 +9,8 @@ coreutils
 bash
 mount-utils
 wget-ssl
+shadow-useradd
+openssl-util
 parted
 losetup
 resize2fs
