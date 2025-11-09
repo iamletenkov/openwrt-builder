@@ -2,12 +2,22 @@
 # Core system / disk utilities
 ############################################################
 block-mount
+blockdev
+python3-light
+python3-logging
+coreutils
+bash
+mount-utils
+wget-ssl
 parted
 losetup
 resize2fs
+tune2fs
 blkid
 lsblk
 fdisk
+gdisk
+sfdisk
 kmod-fs-vfat
 kmod-fs-ext4
 e2fsprogs

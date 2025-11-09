@@ -2,4 +2,4 @@
 # Формат: любая поддерживаемая строка из repositories.conf (например, "src/gz custom http://…").
 # Строки, начинающиеся с #, игнорируются.
 # По умолчанию список пуст — добавьте свои фиды при необходимости.
-src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git
+# src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git

@@ -14,6 +14,8 @@ IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86
 CONFIG_DIR=${CONFIG_DIR:-/work/config}
 PACKAGES_FILE=${PACKAGES_FILE:-${CONFIG_DIR}/packages.txt}
 FEEDS_FILE=${FEEDS_FILE:-${CONFIG_DIR}/feeds.txt}
+FILES_DIR=${FILES_DIR:-/work/files}
+GROWPART_URL=${GROWPART_URL:-https://raw.githubusercontent.com/canonical/cloud-utils/main/bin/growpart}
 
 if [[ ! -f "$PACKAGES_FILE" ]]; then
   echo "→ packages file not found: $PACKAGES_FILE" >&2
@@ -24,6 +26,11 @@ if [[ ! -f "$FEEDS_FILE" ]]; then
   echo "→ feeds file not found: $FEEDS_FILE" >&2
   exit 1
 fi
+
+mkdir -p "$FILES_DIR/usr/sbin"
+echo "→ Installing growpart helper into overlay…"
+wget -q -O "$FILES_DIR/usr/sbin/growpart" "$GROWPART_URL"
+chmod +x "$FILES_DIR/usr/sbin/growpart"
 
 # ---------- 1. Скачиваем ImageBuilder ----------
 if [[ ! -d "$IB_DIR" ]]; then
@@ -56,12 +63,29 @@ mapfile -t CUSTOM_FEEDS < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$FEEDS_FIL
 if (( ${#CUSTOM_FEEDS[@]} )); then
   echo "→ Adding custom feeds from $FEEDS_FILE"
   for feed in "${CUSTOM_FEEDS[@]}"; do
-    if grep -Fxq "$feed" "$IB_DIR/repositories.conf"; then
-      echo "   • already present: $feed"
-    else
-      echo "$feed" >> "$IB_DIR/repositories.conf"
-      echo "   • added: $feed"
-    fi
+    feed_trimmed="$feed"
+    feed_trimmed="${feed_trimmed#"${feed_trimmed%%[![:space:]]*}"}"
+    feed_trimmed="${feed_trimmed%"${feed_trimmed##*[![:space:]]}"}"
+    [[ -z "$feed_trimmed" ]] && continue
+
+    feed_type=${feed_trimmed%%[[:space:]]*}
+    case "$feed_type" in
+      src-git|src_git)
+        echo "   ! skipping unsupported git feed (provide binary feed URL instead): $feed_trimmed"
+        continue
+        ;;
+      src|src/gz|src-gz)
+        if grep -Fxq "$feed_trimmed" "$IB_DIR/repositories.conf"; then
+          echo "   • already present: $feed_trimmed"
+        else
+          echo "$feed_trimmed" >> "$IB_DIR/repositories.conf"
+          echo "   • added: $feed_trimmed"
+        fi
+        ;;
+      *)
+        echo "   ! ignoring unknown feed directive '$feed_type': $feed_trimmed"
+        ;;
+    esac
   done
 else
   echo "→ No custom feeds to add."
@@ -81,6 +105,7 @@ pushd "$IB_DIR" >/dev/null
        PACKAGES="$PKGS" \
        ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
        EXTRA_IMAGE_NAME="custom" \
+       FILES="$FILES_DIR" \
        BIN_DIR=/work/output 
 popd >/dev/null
 

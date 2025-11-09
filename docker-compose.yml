@@ -4,6 +4,7 @@ services:
     build: ./builder
     volumes:
       - ./config:/work/config:ro                  # списки пакетов и фидов
+      - ./files:/work/files                       # overlay-файлы для rootfs
       - ./output:/work/output                     # собранные образы
     environment:
       - OPENWRT_RELEASE=24.10.1
