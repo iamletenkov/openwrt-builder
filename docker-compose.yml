@@ -3,7 +3,7 @@ services:
   builder:
     build: ./builder
     volumes:
-      - ./packages.txt:/work/packages.txt:ro      # список пакетов
+      - ./config:/work/config:ro                  # списки пакетов и фидов
       - ./output:/work/output                     # собранные образы
     environment:
       - OPENWRT_RELEASE=24.10.1

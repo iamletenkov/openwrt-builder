@@ -9,52 +9,23 @@ PROFILE=${PROFILE:-generic}
 ROOTFS_SIZE=${ROOTFS_SIZE:-512}
 JOBS=${JOBS:-$(nproc)}
 
-SDK_DIR="openwrt-sdk-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64"
 IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
 
-# ---------- 1. Скачиваем SDK и собираем wrt.cloudinit ----------
-if [[ ! -d "$SDK_DIR" ]]; then
-  echo "→ Fetching OpenWrt SDK…"
-  for i in {1..3}; do
-    curl -Lf \
-      "https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${SDK_DIR}.tar.zst" \
-      -o /tmp/sdk.tar.zst && break || {
-        echo "SDK download failed ($i). Retrying in 30 s…"
-        sleep 30
-      }
-  done
-  tar -I unzstd -xf /tmp/sdk.tar.zst
+CONFIG_DIR=${CONFIG_DIR:-/work/config}
+PACKAGES_FILE=${PACKAGES_FILE:-${CONFIG_DIR}/packages.txt}
+FEEDS_FILE=${FEEDS_FILE:-${CONFIG_DIR}/feeds.txt}
+
+if [[ ! -f "$PACKAGES_FILE" ]]; then
+  echo "→ packages file not found: $PACKAGES_FILE" >&2
+  exit 1
 fi
 
-pushd "$SDK_DIR" >/dev/null
+if [[ ! -f "$FEEDS_FILE" ]]; then
+  echo "→ feeds file not found: $FEEDS_FILE" >&2
+  exit 1
+fi
 
-# ──- Заменяем канонические фиды на зеркала GitHub ─────────────────────────
-sed -i -e 's#https://git.openwrt.org/openwrt/openwrt.git#https://github.com/openwrt/openwrt.git#' \
-       -e 's#https://git.openwrt.org/feed/packages.git#https://github.com/openwrt/packages.git#' \
-       -e 's#https://git.openwrt.org/project/luci.git#https://github.com/openwrt/luci.git#' \
-       -e 's#https://git.openwrt.org/feed/routing.git#https://github.com/openwrt/routing.git#' \
-       -e 's#https://git.openwrt.org/feed/telephony.git#https://github.com/openwrt/telephony.git#' \
-       feeds.conf.default
-
-  # подключаем внешний фид с wrt.cloudinit (idempotent)
-  sed -i '/^src-git[[:space:]]\+cloud[[:space:]]\+https:\/\/github.com\/iamletenkov\/openwrt-cloud-init\.git$/d' \
-    feeds.conf.default
-  echo "src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git" >> feeds.conf.default
-
-
-  ./scripts/feeds update -a
-  ./scripts/feeds install -a
-  ./scripts/feeds install -p cloud wrt.cloudinit
-
-
-  make defconfig
-  make -j"$JOBS" package/wrt.cloudinit/compile
-  IPK=$(find bin/packages -name 'wrt.cloudinit_*_*.ipk' | head -n1)
-  echo "→ built $IPK"
-  cp "$IPK" /work/
-popd >/dev/null
-
-# ---------- 2. Скачиваем ImageBuilder ----------
+# ---------- 1. Скачиваем ImageBuilder ----------
 if [[ ! -d "$IB_DIR" ]]; then
   url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
   echo "→ Fetching ImageBuilder… [${url}]"
@@ -69,11 +40,7 @@ if [[ ! -d "$IB_DIR" ]]; then
   tar -I unzstd -xf /tmp/ib.tar.zst
 fi
 
-# ---------- 3. Кладём ipk в каталог пакетов IB ----------
-mkdir -p "$IB_DIR/packages/custom"
-cp wrt.cloudinit_*_*.ipk "$IB_DIR/packages/custom/"
-
-# ---------- 4. Подменяем репозитории на зеркало  ----------
+# ---------- 2. Подменяем репозитории на зеркало  ----------
 # По-умолчанию берём пакеты с официального CDN OpenWrt.
 # При необходимости можно переопределить переменной окружения
 #   MIRROR=http://<ваше-зеркало>/openwrt
@@ -84,26 +51,40 @@ MIRROR=${MIRROR:-http://downloads.openwrt.org}
  sed -i "s#https://downloads.openwrt.org#${MIRROR}#g" \
         "$IB_DIR/repositories.conf"
 
+# ---------- 3. Подмешиваем пользовательские фиды ----------
+mapfile -t CUSTOM_FEEDS < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$FEEDS_FILE" || true)
+if (( ${#CUSTOM_FEEDS[@]} )); then
+  echo "→ Adding custom feeds from $FEEDS_FILE"
+  for feed in "${CUSTOM_FEEDS[@]}"; do
+    if grep -Fxq "$feed" "$IB_DIR/repositories.conf"; then
+      echo "   • already present: $feed"
+    else
+      echo "$feed" >> "$IB_DIR/repositories.conf"
+      echo "   • added: $feed"
+    fi
+  done
+else
+  echo "→ No custom feeds to add."
+fi
 
-# ---------- 5. Готовим список пакетов ----------
-mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /work/packages.txt | sort -u)
+# ---------- 4. Готовим список пакетов ----------
+mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$PACKAGES_FILE" | sort -u)
 PKG_ARRAY=("${PKG_ARRAY[@]/ip-tiny}")
 
-PKGS="wrt.cloudinit ${PKG_ARRAY[*]}"
+PKGS="${PKG_ARRAY[*]}"
 echo "→ Packages: $PKGS"
 
-# ---------- 6. Сборка образов ----------
+# ---------- 5. Сборка образов ----------
 pushd "$IB_DIR" >/dev/null
   make -j"$JOBS" image V=s \
        PROFILE="$PROFILE" \
        PACKAGES="$PKGS" \
        ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
        EXTRA_IMAGE_NAME="custom" \
-       BOOTOPTS="ds=nocloud" \
        BIN_DIR=/work/output 
 popd >/dev/null
 
-# ---------- 7. Конвертируем образы в qcow2 ----------
+# ---------- 6. Конвертируем образы в qcow2 ----------
 shopt -s nullglob
 img_gz_list=(/work/output/*.img.gz)
 img_raw_list=(/work/output/*.img)
