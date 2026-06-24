@@ -38,7 +38,6 @@ wpa-supplicant-openssl
 ############################################################
 # LuCI extras / UI
 ############################################################
-luci-theme-material
 luci-app-acl
 luci-app-acme
 luci-app-advanced-reboot
@@ -49,6 +48,26 @@ luci-app-firewall
 luci-app-https-dns-proxy
 luci-app-wol
 luci-lib-httpclient
+
+############################################################
+# LuCI themes
+############################################################
+luci-theme-material
+luci-theme-bootstrap
+luci-theme-openwrt
+luci-theme-openwrt-2020
+
+############################################################
+# Claude advice
+############################################################
+### QoS против лагов/bufferbloat — самое ценное для домашнего роутера
+luci-app-sqm
+sqm-scripts
+### Блокировка рекламы/трекеров на DNS
+luci-app-adblock
+### Обновления/пакеты через веб
+luci-app-attendedsysupgrade
+
 
 ############################################################
 # Virtualisation / QEMU guests
