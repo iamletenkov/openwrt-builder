@@ -110,14 +110,6 @@ ca-certificates
 collectd-mod-dhcpleases
 
 ############################################################
-# Messaging / MQTT stack
-############################################################
-mosquitto-ssl
-mosquitto-client-ssl
-libmosquitto-ssl
-luci-app-mosquitto
-
-############################################################
 # VPN & security
 ############################################################
 openvpn-easy-rsa
@@ -129,8 +121,7 @@ luci-proto-wireguard
 ### OpenVPN (есть)
 openvpn-openssl
 luci-app-openvpn
-### IPsec/IKEv2
-strongswan-default
+### IPsec/IKEv2 (libreswan)
 luci-app-libreswan
 ### L2TP (+IPsec)
 xl2tpd
