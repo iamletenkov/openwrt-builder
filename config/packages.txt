@@ -67,8 +67,11 @@ ttyd
 ############################################################
 # WIFI adapter drivers
 ############################################################
+mt7921bt-firmware
 kmod-mt7921u
-mt7921-firmware
+kmod-mt7921s
+kmod-mt7921e
+kmod-mt7921-firmware
 
 ############################################################
 # Monitoring & CLI utilities
