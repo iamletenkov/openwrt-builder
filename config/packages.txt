@@ -59,6 +59,8 @@ qemu-ga
 ############################################################
 # Terminal apps
 ############################################################
+-libwebsockets-openssl
+libwebsockets-full
 luci-app-ttyd
 ttyd
 
