@@ -92,11 +92,15 @@ ttyd
 ############################################################
 # WIFI adapter drivers
 ############################################################
+### MediaTek MT7921 (USB EDUP / M.2)
 mt7921bt-firmware
 kmod-mt7921u
 kmod-mt7921s
 kmod-mt7921e
 kmod-mt7921-firmware
+### Intel AX201 (CNVi, встроенный в NUC) — драйвер + прошивка
+kmod-iwlwifi
+iwlwifi-firmware-ax201
 
 ############################################################
 # Monitoring & CLI utilities
