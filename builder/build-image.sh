@@ -105,7 +105,16 @@ if (( feeds_added )); then
   echo "→ Custom feeds present → disabling opkg signature check for this build"
   sed -i 's/^\([[:space:]]*\)option check_signature/\1# option check_signature/' \
          "$IB_DIR/repositories.conf"
+  # Подстраховка: если строки option check_signature в конфиге нет вовсе —
+  # явно выключим проверку, чтобы opkg не отверг неподписанный сторонний фид.
+  if ! grep -qE '^[[:space:]]*#?[[:space:]]*option check_signature' "$IB_DIR/repositories.conf"; then
+    echo "option check_signature 0" >> "$IB_DIR/repositories.conf"
+  fi
 fi
+
+echo "──────── repositories.conf (итоговый) ────────"
+cat "$IB_DIR/repositories.conf"
+echo "──────────────────────────────────────────────"
 
 # ---------- 4. Готовим список пакетов ----------
 mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$PACKAGES_FILE" | sort -u)

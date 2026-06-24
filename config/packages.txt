@@ -56,6 +56,8 @@ luci-theme-material
 luci-theme-bootstrap
 luci-theme-openwrt
 luci-theme-openwrt-2020
+# community-темы из openwrt.ai (фид в config/feeds.txt); URL подтверждён —
+# argon/argon-config есть в .../24.10/packages/x86_64/kiddin9
 luci-theme-argon
 luci-app-argon-config
 luci-theme-edge
@@ -90,11 +92,15 @@ ttyd
 ############################################################
 # WIFI adapter drivers
 ############################################################
+### MediaTek MT7921 (USB EDUP / M.2)
 mt7921bt-firmware
 kmod-mt7921u
 kmod-mt7921s
 kmod-mt7921e
 kmod-mt7921-firmware
+### Intel AX201 (CNVi, встроенный в NUC) — драйвер + прошивка
+kmod-iwlwifi
+iwlwifi-firmware-ax201
 
 ############################################################
 # Monitoring & CLI utilities
@@ -125,10 +131,11 @@ luci-app-openvpn
 luci-app-libreswan
 ### L2TP (+IPsec)
 xl2tpd
-luci-proto-l2tp
 ### PPTP (по желанию)
 ppp-mod-pptp
-luci-proto-pptp
+### LuCI-форма для PPP-протоколов (PPPoE/L2TP/PPTP)
+# отдельных luci-proto-l2tp/-pptp в OpenWRT нет; UI даёт luci-proto-ppp
+luci-proto-ppp
 ### OpenConnect
 openconnect
 luci-proto-openconnect
