@@ -103,6 +103,7 @@ kmod-mt7921-firmware
 ### Intel AX201 (CNVi, встроенный в NUC) — драйвер + прошивка
 kmod-iwlwifi
 iwlwifi-firmware-ax201
+iwlwifi-firmware-ax101
 
 ############################################################
 # Monitoring & CLI utilities
