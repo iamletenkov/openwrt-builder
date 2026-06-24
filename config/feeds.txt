@@ -3,3 +3,11 @@
 # Строки, начинающиеся с #, игнорируются.
 # По умолчанию список пуст — добавьте свои фиды при необходимости.
 # src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git
+
+# Сторонний community-фид openwrt.ai (kiddin9): luci-theme-argon/edge,
+# luci-app-argon-config, AmneziaWG и многое другое, собранное под каждый target.
+# URL = .../releases/<branch>/packages/<arch>/kiddin9. Здесь — 24.10 / x86_64
+# (должно совпадать с веткой OPENWRT_RELEASE и архитектурой TARGET/SUBTARGET).
+# Фид подписан своим ключом; build-image.sh при наличии кастомных фидов
+# отключает проверку подписи на время сборки (см. репозиторий-конфиг).
+src/gz openwrt_ai https://dl.openwrt.ai/releases/24.10/packages/x86_64/kiddin9

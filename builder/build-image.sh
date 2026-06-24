@@ -59,6 +59,7 @@ MIRROR=${MIRROR:-http://downloads.openwrt.org}
         "$IB_DIR/repositories.conf"
 
 # ---------- 3. Подмешиваем пользовательские фиды ----------
+feeds_added=0
 mapfile -t CUSTOM_FEEDS < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$FEEDS_FILE" || true)
 if (( ${#CUSTOM_FEEDS[@]} )); then
   echo "→ Adding custom feeds from $FEEDS_FILE"
@@ -75,6 +76,7 @@ if (( ${#CUSTOM_FEEDS[@]} )); then
         continue
         ;;
       src|src/gz|src-gz)
+        feeds_added=1
         if grep -Fxq "$feed_trimmed" "$IB_DIR/repositories.conf"; then
           echo "   • already present: $feed_trimmed"
         else
@@ -89,6 +91,20 @@ if (( ${#CUSTOM_FEEDS[@]} )); then
   done
 else
   echo "→ No custom feeds to add."
+fi
+
+# ---------- 3b. Подпись репозиториев для сторонних фидов ----------
+# Сторонние фиды (openwrt.ai и т.п.) подписаны своим usign-ключом, которого нет
+# в keys/ ImageBuilder'а → opkg отверг бы их по подписи. Импорт чужого ключа в
+# офлайн-сборку хрупок (ротация ключей, наличие usign в контейнере), поэтому при
+# наличии кастомных фидов отключаем проверку подписи репозиториев НА ВРЕМЯ СБОРКИ.
+# ImageBuilder и фиды тянутся по HTTPS, сборка идёт в контролируемом окружении.
+# Чтобы доверять только конкретному ключу — положи его usign-pub в "$IB_DIR/keys/"
+# (имя файла = fingerprint) и убери этот блок.
+if (( feeds_added )); then
+  echo "→ Custom feeds present → disabling opkg signature check for this build"
+  sed -i 's/^\([[:space:]]*\)option check_signature/\1# option check_signature/' \
+         "$IB_DIR/repositories.conf"
 fi
 
 # ---------- 4. Готовим список пакетов ----------
