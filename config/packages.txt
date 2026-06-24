@@ -56,9 +56,11 @@ luci-theme-material
 luci-theme-bootstrap
 luci-theme-openwrt
 luci-theme-openwrt-2020
-luci-theme-argon
-luci-app-argon-config
-luci-theme-edge
+# ⚠ community-темы из openwrt.ai — включить ПОСЛЕ подтверждения URL фида
+# (config/feeds.txt). Пока фид не отдаёт пакеты — ставить в рантайме на роутере.
+#luci-theme-argon
+#luci-app-argon-config
+#luci-theme-edge
 
 
 ############################################################
@@ -125,10 +127,11 @@ luci-app-openvpn
 luci-app-libreswan
 ### L2TP (+IPsec)
 xl2tpd
-luci-proto-l2tp
 ### PPTP (по желанию)
 ppp-mod-pptp
-luci-proto-pptp
+### LuCI-форма для PPP-протоколов (PPPoE/L2TP/PPTP)
+# отдельных luci-proto-l2tp/-pptp в OpenWRT нет; UI даёт luci-proto-ppp
+luci-proto-ppp
 ### OpenConnect
 openconnect
 luci-proto-openconnect
