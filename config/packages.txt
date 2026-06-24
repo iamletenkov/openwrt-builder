@@ -43,7 +43,9 @@ luci-app-acme
 luci-app-advanced-reboot
 luci-app-commands
 luci-app-dcwapd
-luci-app-ddns
+# luci-app-ddns: версия из фида openwrt.ai тянет ddns-scripts-aliyun, которого
+# нет под x86_64 → ломает сборку. Ставить в рантайме на роутере при необходимости.
+#luci-app-ddns
 luci-app-firewall
 luci-app-https-dns-proxy
 luci-app-wol
