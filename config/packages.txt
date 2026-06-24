@@ -56,6 +56,10 @@ luci-theme-material
 luci-theme-bootstrap
 luci-theme-openwrt
 luci-theme-openwrt-2020
+luci-theme-argon
+luci-app-argon-config
+luci-theme-edge
+
 
 ############################################################
 # Claude advice
@@ -116,12 +120,28 @@ luci-app-mosquitto
 ############################################################
 # VPN & security
 ############################################################
-openvpn-openssl
 openvpn-easy-rsa
-luci-app-openvpn
+
+### WireGuard
 wireguard-tools
+kmod-wireguard
 luci-proto-wireguard
+### OpenVPN (есть)
+openvpn-openssl
+luci-app-openvpn
+### IPsec/IKEv2
+strongswan-default
 luci-app-libreswan
+### L2TP (+IPsec)
+xl2tpd
+luci-proto-l2tp
+### PPTP (по желанию)
+ppp-mod-pptp
+luci-proto-pptp
+### OpenConnect
+openconnect
+luci-proto-openconnect
+
 
 ############################################################
 # cloud‑init replacement (built locally via SDK)
