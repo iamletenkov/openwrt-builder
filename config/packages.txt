@@ -105,6 +105,7 @@ kmod-mt7921-firmware
 ### Intel AX201 (CNVi, встроенный в NUC) — драйвер + прошивка
 kmod-iwlwifi
 iwlwifi-firmware-ax201
+iwlwifi-firmware-ax101
 ### Управление WiFi через веб
 # luci-app-travelmate — авто-подключение к открытым/известным сетям (STA-аплинк)
 # luci-app-wifischedule — расписание включения/выключения радио
@@ -112,6 +113,8 @@ iwlwifi-firmware-ax201
 luci-app-travelmate
 luci-app-wifischedule
 iwinfo
+
+iwlwifi-firmware-ax101
 
 ############################################################
 # Monitoring & CLI utilities
