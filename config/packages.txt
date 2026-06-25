@@ -47,7 +47,9 @@ luci-app-dcwapd
 # нет под x86_64 → ломает сборку. Ставить в рантайме на роутере при необходимости.
 #luci-app-ddns
 luci-app-firewall
-luci-app-https-dns-proxy
+# luci-app-https-dns-proxy — КОНФЛИКТУЕТ с podkop (оба правят /etc/config/dhcp).
+# podkop в CONFLICTS явно указывает https-dns-proxy → оставляем podkop, этот убираем.
+#luci-app-https-dns-proxy
 luci-app-wol
 luci-lib-httpclient
 
@@ -104,6 +106,15 @@ kmod-mt7921-firmware
 kmod-iwlwifi
 iwlwifi-firmware-ax201
 iwlwifi-firmware-ax101
+### Управление WiFi через веб
+# luci-app-travelmate — авто-подключение к открытым/известным сетям (STA-аплинк)
+# luci-app-wifischedule — расписание включения/выключения радио
+# iwinfo — CLI-инфо по радио/скану (нужен travelmate)
+luci-app-travelmate
+luci-app-wifischedule
+iwinfo
+
+iwlwifi-firmware-ax101
 
 ############################################################
 # Monitoring & CLI utilities
@@ -117,6 +128,10 @@ logger
 curl
 ca-certificates
 collectd-mod-dhcpleases
+# luci-app-nlbwmon — учёт трафика по клиентам
+# luci-app-statistics — графики (collectd) по нагрузке/сети
+luci-app-nlbwmon
+luci-app-statistics
 
 ############################################################
 # VPN & security
@@ -127,6 +142,11 @@ openvpn-easy-rsa
 wireguard-tools
 kmod-wireguard
 luci-proto-wireguard
+### AmneziaWG (обфусцированный WireGuard) — .ipk из local-ipk.txt (awg-openwrt v24.10.1)
+# kmod привязан к ядру 24.10.1; конфиг туннеля настраивается в LuCI (протокол AmneziaWG)
+kmod-amneziawg
+amneziawg-tools
+luci-app-amneziawg
 ### OpenVPN (есть)
 openvpn-openssl
 luci-app-openvpn
@@ -142,6 +162,11 @@ luci-proto-ppp
 ### OpenConnect
 openconnect
 luci-proto-openconnect
+### Podkop — выборочная маршрутизация (sing-box), .ipk из local-ipk.txt
+# deps (sing-box, jq, kmod-nft-tproxy, coreutils-base64, bind-dig) opkg тянет из офиц. фидов
+podkop
+luci-app-podkop
+sing-box
 
 
 ############################################################

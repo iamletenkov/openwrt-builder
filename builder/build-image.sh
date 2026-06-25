@@ -93,6 +93,42 @@ else
   echo "→ No custom feeds to add."
 fi
 
+# ---------- 3a. Локальные .ipk (AmneziaWG, podkop и т.п.) ----------
+# Пакеты, которых нет в фидах (или kmod-* собранные под конкретное ядро), кладём в
+# локальный фид ImageBuilder'а: качаем .ipk по ссылкам из local-ipk.txt, строим
+# индекс (Packages.gz) и подключаем как "src/gz file://…" ПЕРВОЙ строкой
+# repositories.conf (приоритет над сетевыми фидами). Подпись снимается в 3b.
+LOCAL_IPK_FILE=${LOCAL_IPK_FILE:-${CONFIG_DIR}/local-ipk.txt}
+LOCAL_IPK_URLS=()
+if [[ -f "$LOCAL_IPK_FILE" ]]; then
+  mapfile -t LOCAL_IPK_URLS < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$LOCAL_IPK_FILE" || true)
+fi
+if (( ${#LOCAL_IPK_URLS[@]} )); then
+  IB_ABS="$(cd "$IB_DIR" && pwd)"
+  IPKG_INDEX="$IB_ABS/scripts/ipkg-make-index.sh"
+  if [[ ! -x "$IPKG_INDEX" ]]; then
+    echo "→ ipkg-make-index.sh не найден в ImageBuilder ($IPKG_INDEX)" >&2
+    exit 1
+  fi
+  LOCAL_PKG_DIR="$IB_ABS/localpkgs"
+  mkdir -p "$LOCAL_PKG_DIR"
+  echo "→ Fetching local .ipk from $LOCAL_IPK_FILE"
+  for url in "${LOCAL_IPK_URLS[@]}"; do
+    url="${url#"${url%%[![:space:]]*}"}"; url="${url%"${url##*[![:space:]]}"}"
+    [[ -z "$url" ]] && continue
+    echo "   • $url"
+    wget -q -P "$LOCAL_PKG_DIR" "$url" || { echo "   ! download failed: $url" >&2; exit 1; }
+  done
+  echo "→ Building local package index (Packages.gz)"
+  ( cd "$LOCAL_PKG_DIR" && "$IPKG_INDEX" . > Packages )
+  gzip -kf "$LOCAL_PKG_DIR/Packages"
+  local_feed="src/gz localpkgs file://$LOCAL_PKG_DIR"
+  grep -Fxq "$local_feed" "$IB_DIR/repositories.conf" \
+    || sed -i "1i $local_feed" "$IB_DIR/repositories.conf"
+  feeds_added=1
+  echo "   • local feed: $local_feed ($(ls "$LOCAL_PKG_DIR"/*.ipk | wc -l) .ipk)"
+fi
+
 # ---------- 3b. Подпись репозиториев для сторонних фидов ----------
 # Сторонние фиды (openwrt.ai и т.п.) подписаны своим usign-ключом, которого нет
 # в keys/ ImageBuilder'а → opkg отверг бы их по подписи. Импорт чужого ключа в
