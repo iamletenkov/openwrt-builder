@@ -120,7 +120,21 @@ if (( ${#LOCAL_IPK_URLS[@]} )); then
     wget -q -P "$LOCAL_PKG_DIR" "$url" || { echo "   ! download failed: $url" >&2; exit 1; }
   done
   echo "→ Building local package index (Packages.gz)"
-  ( cd "$LOCAL_PKG_DIR" && "$IPKG_INDEX" . > Packages )
+  # ipkg-make-index.sh зовёт "$MKHASH sha256|md5 <file>"; вне make-окружения mkhash
+  # нет в PATH (MKHASH пустой → голое "sha256: command not found"). Подсовываем шим
+  # поверх coreutils — вывод идентичен mkhash (только hex-хэш).
+  MKHASH_SHIM="$LOCAL_PKG_DIR/.mkhash"
+  cat > "$MKHASH_SHIM" <<'SH'
+#!/bin/sh
+algo=$1; shift
+case "$algo" in
+  md5)    md5sum "$@" | awk '{print $1}' ;;
+  sha256) sha256sum "$@" | awk '{print $1}' ;;
+  *) echo "mkhash-shim: unknown algo '$algo'" >&2; exit 1 ;;
+esac
+SH
+  chmod +x "$MKHASH_SHIM"
+  ( cd "$LOCAL_PKG_DIR" && MKHASH="$MKHASH_SHIM" "$IPKG_INDEX" . > Packages )
   gzip -kf "$LOCAL_PKG_DIR/Packages"
   local_feed="src/gz localpkgs file://$LOCAL_PKG_DIR"
   grep -Fxq "$local_feed" "$IB_DIR/repositories.conf" \
