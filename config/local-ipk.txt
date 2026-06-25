@@ -1,0 +1,20 @@
+# Локальные .ipk, которых нет в обычных фидах (или kmod-* собраны под конкретное
+# ядро). build-image.sh качает их в localpkgs/ ImageBuilder, строит индекс и
+# подключает как локальный "src/gz file://…" фид. Имена пакетов — в packages.txt.
+#
+# ⚠ Версии kmod-* ОБЯЗАНЫ совпадать с OPENWRT_RELEASE (сейчас 24.10.1) и target
+#    x86/64 — иначе opkg отвергнет модуль по версии ядра. При бампе OpenWRT
+#    обновляй и теги ниже.
+
+# --- AmneziaWG (обфусцированный WireGuard) — сборка под OpenWRT 24.10.1 / x86_64 ---
+# проект: https://github.com/Slava-Shchipunov/awg-openwrt
+# (в v24.10.1 LuCI-пакет называется luci-app-amneziawg; в v24.10.3+ — luci-proto-amneziawg)
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v24.10.1/kmod-amneziawg_v24.10.1_x86_64_x86_64.ipk
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v24.10.1/amneziawg-tools_v24.10.1_x86_64_x86_64.ipk
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v24.10.1/luci-app-amneziawg_v24.10.1_x86_64_x86_64.ipk
+
+# --- Podkop (выборочная маршрутизация через туннель, на sing-box) — arch-independent ---
+# проект: https://github.com/itdoginfo/podkop
+# зависимости (sing-box, jq, kmod-nft-tproxy, coreutils-base64, bind-dig) — из офиц. фидов
+https://github.com/itdoginfo/podkop/releases/download/0.7.19/podkop-v0.7.19-r1-all.ipk
+https://github.com/itdoginfo/podkop/releases/download/0.7.19/luci-app-podkop-v0.7.19-r1-all.ipk
