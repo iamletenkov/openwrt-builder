@@ -1,46 +1,115 @@
 name: Build OpenWrt Images
 
-permissions:
-  contents: write
-  packages: read
-
+# Запуск:
+#   • тег v*.*.* — все таргеты (x86/64, armsr/armv8, RPi 4, RPi 5) и релиз GitHub;
+#   • вручную (Actions → Run workflow) — один таргет или все, релиз по флагу publish.
 on:
   push:
     tags:
-      - "v*.*.*"      # запуск при создании тега версии
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      openwrt_release:
+        description: "Релиз OpenWrt (25.12+)"
+        default: "25.12.6"
+        required: true
+      target:
+        description: "TARGET (x86 | armsr | bcm27xx)"
+        default: "x86"
+        required: true
+      subtarget:
+        description: "SUBTARGET (64 | armv8 | bcm2711 | bcm2712)"
+        default: "64"
+        required: true
+      profile:
+        description: "PROFILE (generic | rpi-4 | rpi-5)"
+        default: "generic"
+        required: true
+      all_targets:
+        description: "Собрать все таргеты (поля target/subtarget/profile игнорируются)"
+        type: boolean
+        default: false
+      publish:
+        description: "Создать релиз GitHub с образами"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 env:
-  # переиспользуем дефолты, можно переопределять в Secrets/Variables
-  OPENWRT_RELEASE: 24.10.1
-  TARGET: x86
-  SUBTARGET: 64
-  PROFILE: generic
+  OPENWRT_RELEASE: ${{ inputs.openwrt_release || '25.12.6' }}
   ROOTFS_SIZE: 1024
   JOBS: 4            # меньше потоков = стабильнее CI
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Тесты скриптов образа (wrt.cloudinit, ресайз)
+        run: make test
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.m.outputs.include }}
+    steps:
+      - id: m
+        env:
+          ALL: ${{ github.event_name == 'push' || inputs.all_targets }}
+          T: ${{ inputs.target }}
+          S: ${{ inputs.subtarget }}
+          P: ${{ inputs.profile }}
+        run: |
+          if [ "$ALL" = true ]; then
+            inc='[{"target":"x86","subtarget":"64","profile":"generic"},{"target":"armsr","subtarget":"armv8","profile":"generic"},{"target":"bcm27xx","subtarget":"bcm2711","profile":"rpi-4"},{"target":"bcm27xx","subtarget":"bcm2712","profile":"rpi-5"}]'
+          else
+            inc=$(jq -cn --arg t "$T" --arg s "$S" --arg p "$P" '[{target:$t,subtarget:$s,profile:$p}]')
+          fi
+          echo "include=$inc" >> "$GITHUB_OUTPUT"
 
-      - name: Clean workspace
-        run: make clean
+  build:
+    needs: [test, matrix]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      SUBTARGET: ${{ matrix.subtarget }}
+      PROFILE: ${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Build OpenWrt images
+      - name: Сборка образа
         run: make build
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      # Имена файлов уже несут релиз и таргет:
+      # openwrt-<релиз>-custom-<target>-<subtarget>-<profile>-…
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: openwrt-images
-          path: output/*
+          name: openwrt-${{ env.OPENWRT_RELEASE }}-${{ matrix.target }}-${{ matrix.subtarget }}
+          path: output/${{ env.OPENWRT_RELEASE }}/${{ matrix.target }}-${{ matrix.subtarget }}/*
+          if-no-files-found: error
 
-      - name: Create GitHub Release & attach images
-        uses: softprops/action-gh-release@v2
+  release:
+    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          files: output/*
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          # тег — свой при push, при ручном запуске — openwrt-<релиз>-r<номер прогона>
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('openwrt-{0}-r{1}', env.OPENWRT_RELEASE, github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ github.event_name == 'push' && github.ref_name || format('OpenWrt {0} (r{1})', env.OPENWRT_RELEASE, github.run_number) }}
+          files: dist/*
