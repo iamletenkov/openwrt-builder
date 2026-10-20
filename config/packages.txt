@@ -2,6 +2,10 @@
 # Core system / disk utilities
 ############################################################
 block-mount
+partx-utils
+# cloud-init диск Proxmox (ide2, media=cdrom): ISO9660 на /dev/sr0
+kmod-fs-isofs
+kmod-scsi-cdrom
 blockdev
 python3-light
 python3-logging
@@ -30,7 +34,7 @@ e2fsprogs
 uhttpd
 #luci-ssl-nginx
 luci-ssl
-openssh-server
+# openssh-server не ставим: dropbear уже держит :22, sshd не поднимется (порт занят)
 openssh-sftp-server
 hostapd-openssl
 wpa-supplicant-openssl
@@ -60,11 +64,8 @@ luci-theme-material
 luci-theme-bootstrap
 luci-theme-openwrt
 luci-theme-openwrt-2020
-# community-темы из openwrt.ai (фид в config/feeds.txt); URL подтверждён —
-# argon/argon-config есть в .../24.10/packages/x86_64/kiddin9
-luci-theme-argon
-luci-app-argon-config
-luci-theme-edge
+# luci-theme-argon, luci-app-argon-config, luci-theme-edge — только во фиде
+# openwrt.ai (kiddin9), его формат под apk/25.12 не проверен; см. feeds.txt
 
 
 ############################################################
@@ -82,8 +83,8 @@ luci-app-attendedsysupgrade
 ############################################################
 # Virtualisation / QEMU guests
 ############################################################
-qemu-bridge-helper
-qemu-ga
+# qemu-ga, qemu-bridge-helper — в packages-x86-64.txt и packages-armsr-armv8.txt
+# (во фиде aarch64_cortex-a72/a76 для RPi их нет)
 
 ############################################################
 # Terminal apps
@@ -142,11 +143,9 @@ openvpn-easy-rsa
 wireguard-tools
 kmod-wireguard
 luci-proto-wireguard
-### AmneziaWG (обфусцированный WireGuard) — .ipk из local-ipk.txt (awg-openwrt v24.10.1)
-# kmod привязан к ядру 24.10.1; конфиг туннеля настраивается в LuCI (протокол AmneziaWG)
-kmod-amneziawg
-amneziawg-tools
-luci-app-amneziawg
+### AmneziaWG — сторонние .apk под конкретное ядро 25.12.x; подключаются через
+# config/local-packages.txt (URL + sha256) и строками сюда: kmod-amneziawg,
+# amneziawg-tools, luci-proto-amneziawg. В официальных фидах их нет.
 ### OpenVPN (есть)
 openvpn-openssl
 luci-app-openvpn
@@ -162,14 +161,12 @@ luci-proto-ppp
 ### OpenConnect
 openconnect
 luci-proto-openconnect
-### Podkop — выборочная маршрутизация (sing-box), .ipk из local-ipk.txt
-# deps (sing-box, jq, kmod-nft-tproxy, coreutils-base64, bind-dig) opkg тянет из офиц. фидов
-podkop
-luci-app-podkop
+### Podkop — сторонние .apk (github.com/itdoginfo/podkop), через local-packages.txt
 sing-box
 
 
 ############################################################
-# cloud‑init replacement (built locally via SDK)
+# cloud-init (wrt.cloudinit) и авторесайз корня — файлы в overlay/,
+# пакеты им нужны выше: parted, partx-utils, losetup, resize2fs, blkid,
+# kmod-fs-isofs, kmod-scsi-cdrom, openssl-util
 ############################################################
-# rc.cloud                # injected automatically by build‑image.sh

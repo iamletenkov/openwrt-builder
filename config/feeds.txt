@@ -1,13 +1,6 @@
-# Список дополнительных фидов для ImageBuilder.
-# Формат: любая поддерживаемая строка из repositories.conf (например, "src/gz custom http://…").
-# Строки, начинающиеся с #, игнорируются.
-# По умолчанию список пуст — добавьте свои фиды при необходимости.
-# src-git cloud https://github.com/iamletenkov/openwrt-cloud-init.git
-
-# Сторонний community-фид openwrt.ai (kiddin9): luci-theme-argon/edge,
-# luci-app-argon-config, AmneziaWG и многое другое, собранное под каждый target.
-# URL = .../releases/<branch>/packages/<arch>/kiddin9. Здесь — 24.10 / x86_64
-# (должно совпадать с веткой OPENWRT_RELEASE и архитектурой TARGET/SUBTARGET).
-# Фид подписан своим ключом; build-image.sh при наличии кастомных фидов
-# отключает проверку подписи на время сборки (см. репозиторий-конфиг).
-src/gz openwrt_ai https://dl.openwrt.ai/releases/24.10/packages/x86_64/kiddin9
+# Дополнительные apk-фиды для ImageBuilder 25.12+.
+# Формат: одна строка — URL на packages.adb (https://, http:// или file://).
+# Подписи проверяются всегда: публичный ключ фида (*.pem, apk v3) положите
+# в config/keys/ — иначе ImageBuilder отвергнет индекс.
+# Пример (сторонний фид openwrt.ai, формат и ключ под 25.12 не проверены):
+# https://dl.openwrt.ai/releases/25.12/packages/x86_64/kiddin9/packages.adb

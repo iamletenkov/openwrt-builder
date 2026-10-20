@@ -1,0 +1,3 @@
+# Пакеты только для armsr/armv8 (дописываются к packages.txt)
+qemu-ga
+qemu-bridge-helper

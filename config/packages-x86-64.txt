@@ -1,0 +1,3 @@
+# Пакеты только для x86/64 (дописываются к packages.txt)
+qemu-ga
+qemu-bridge-helper
