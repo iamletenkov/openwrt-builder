@@ -1,0 +1,25 @@
+#cloud-config
+hostname: wrt-1
+manage_etc_hosts: true
+users:
+- name: ops
+  hashed_passwd: $6$rounds=656000$w2ZJEdPvWoqWmZPd$GSSiWs8zqOhxQOPRcMbAf43.bgzxdjsYYT...pHs0IMOp9vjvrCMm0BPbbMYuT9XGZ9Dje5sYsXz5C5FWcEnb.
+  groups: sudo
+  shell: /bin/bash
+  lock_passwd: false
+  sudo: ALL=(ALL) NOPASSWD:ALL
+  ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3Nz probe@host
+  - ssh-rsa AAAAB3Nza second@host
+chpasswd:
+  list:
+  - root:$6$rounds=656000$94l1ZHem1VGT6RHZ$CqvjxdpJlYk.JDtZsU71FR9TDmCD6tsPJOH/vVST9f492sEFdYOl83PAE5RCX/2M904wO0RIu8cL0dgZIPjCz.
+  expire: false
+ssh_pwauth: true
+package_update: false
+package_upgrade: false
+growpart:
+  mode: auto
+  devices:
+  - /
+resize_rootfs: true

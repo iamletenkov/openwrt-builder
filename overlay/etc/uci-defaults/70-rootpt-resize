@@ -1,0 +1,67 @@
+#!/bin/sh
+# Расширить корневой РАЗДЕЛ на весь диск.
+#
+# Перезагрузка здесь — откат, а не основной путь. После `parted resizepart`
+# на смонтированном корне ядро продолжает видеть старый размер; `partx -u`
+# сообщает ему новый через BLKPG, не перезагружаясь (так же делает growpart
+# у cloud-init). Ребут остаётся на случай, если partx нет или он не помог.
+#
+# Порядок обязателен: маркер ставится ПОСЛЕ работы, а замок снимается перед
+# выходом без ребута — иначе 80-rootfs-resize не возьмёт тот же замок и
+# файловая система останется нерасширенной.
+
+if [ ! -e /etc/rootpt-resize ] \
+&& type parted > /dev/null \
+&& lock -n /var/lock/root-resize
+then
+ROOT_BLK="$(readlink -f /sys/dev/block/"$(awk -e \
+'$9=="/dev/root"{print $3}' /proc/self/mountinfo)")"
+ROOT_DISK="/dev/$(basename "${ROOT_BLK%/*}")"
+ROOT_PART="${ROOT_BLK##*[^0-9]}"
+SIZE_BEFORE="$(cat "${ROOT_BLK}/size" 2>/dev/null)"
+
+# Граница роста — НЕ всегда 100%. `bs device write` кладёт раздел cidata в
+# самый конец носителя, и запрос «до конца диска» упирается в него: замер на
+# трёхгигабайтном диске дал корень 496 МБ и две перезагрузки впустую.
+# Растём до начала следующего раздела, а если корень последний — до конца.
+LIMIT="$(parted -s "${ROOT_DISK}" unit s print 2>/dev/null | awk -v p="${ROOT_PART}" '
+$1 ~ /^[0-9]+$/ {
+n = $1 + 0
+s = $2; sub(/s$/, "", s); s = s + 0
+e = $3; sub(/s$/, "", e); e = e + 0
+if (n == p) { rs = s }
+starts[n] = s
+}
+END {
+best = 0
+for (n in starts) if (starts[n] > rs && (best == 0 || starts[n] < best)) best = starts[n]
+if (best > 0) printf "%ds\n", best - 1
+else print "100%"
+}')"
+[ -n "${LIMIT}" ] || LIMIT="100%"
+parted -f -s "${ROOT_DISK}" \
+resizepart "${ROOT_PART}" "${LIMIT}"
+
+LIVE=0
+if type partx > /dev/null
+then
+partx -u "${ROOT_DISK}" > /dev/null 2>&1
+SIZE_AFTER="$(cat "${ROOT_BLK}/size" 2>/dev/null)"
+# Ядро увидело новый размер — перезагружаться незачем.
+[ -n "${SIZE_AFTER}" ] && [ "${SIZE_AFTER}" != "${SIZE_BEFORE}" ] && LIVE=1
+fi
+
+mount_root done
+touch /etc/rootpt-resize
+
+if [ "${LIVE}" = 1 ]
+then
+logger -t rootpt-resize "partition grown live (${SIZE_BEFORE} -> ${SIZE_AFTER} sectors)"
+lock -u /var/lock/root-resize
+exit 1
+fi
+
+logger -t rootpt-resize "live update unavailable, rebooting"
+reboot
+fi
+exit 1

@@ -1,0 +1,707 @@
+#!/bin/sh /etc/rc.common
+#
+# wrt.cloudinit – Cloud-Init (NoCloud) for OpenWrt on Proxmox 8 (LXC/KVM)
+#
+#   • eth0 → WAN  (static | dhcp4) — клиент; LuCI доступна извне
+#   • ethX → LAN* (static → DHCP-server, dhcp4 → DHCP-client)
+#
+
+START=47
+STOP=10
+USE_PROCD=1
+PROG="wrt.cloudinit"
+CIDATA=/mnt/cidata
+CLOUDINIT_READY_FLAG=/run/wrt-cloudinit.ready
+FIRSTBOOT_SCRIPT=/usr/libexec/bisquite-firstboot.sh
+# Путь должен совпадать с тем, куда COPY_IN кладёт lib/ в openwrt.vmfile
+# (virt-customize --copy-in вкладывает basename: lib → /usr/lib/wrt-cloudinit/lib).
+WRT_LIBDIR=/usr/lib/wrt-cloudinit/lib
+
+# Подъём чистых функций из lib (парсеры, state). FATAL, если их нет.
+load_libs() {
+	local found
+	[ -d "$WRT_LIBDIR" ] || return 1
+	found=0
+	for f in "$WRT_LIBDIR"/*.sh; do
+		[ -f "$f" ] || continue
+		# shellcheck disable=SC1090
+		. "$f" || return 1
+		found=1
+	done
+	[ "$found" = 1 ]
+}
+
+# ---------------------------------------------------------------- cidata
+command -v mountpoint >/dev/null 2>&1 || alias mountpoint='busybox mountpoint'
+
+mount_cidata() {
+	[ -d "$CIDATA" ] || mkdir -p "$CIDATA"
+	mountpoint -q "$CIDATA" && return 0
+
+	# /dev/sr0 — сид от Proxmox: адаптер вешает его как ide2 media=cdrom.
+	mount -o ro /dev/sr0 "$CIDATA" 2>/dev/null && return 0
+
+	# Раздел с меткой cidata — сид от `bs device write`: писалка создаёт
+	# FAT32-раздел в конце носителя. Раньше он не искался вовсе, и карта,
+	# записанная бисквитом, приезжала без пользователя, пароля и сети.
+	for dev in $(find_cidata_device); do
+		mount -o ro "$dev" "$CIDATA" 2>/dev/null && return 0
+	done
+	return 1
+}
+
+# find_cidata_device → пути блочных устройств с меткой cidata (0 или больше)
+find_cidata_device() {
+	# `block info` есть в OpenWrt всегда (пакет block-mount), `blkid` — не всегда.
+	if command -v block >/dev/null 2>&1; then
+		block info 2>/dev/null | sed -n 's|^\(/dev/[^:]*\):.*LABEL="cidata".*|\1|p'
+	fi
+	if command -v blkid >/dev/null 2>&1; then
+		blkid -t LABEL=cidata -o device 2>/dev/null
+	fi
+}
+
+umount_cidata() {
+	mountpoint -q "$CIDATA" || return 0
+	umount "$CIDATA" && rmdir "$CIDATA"
+}
+
+mark_cloudinit_ready() {
+	touch "$CLOUDINIT_READY_FLAG"
+}
+
+run_firstboot_commands() {
+	local script="$FIRSTBOOT_SCRIPT"
+	[ -s "$script" ] || return 0
+	chmod +x "$script" >/dev/null 2>&1 || true
+	logger -t "$PROG" "executing firstboot commands from $script"
+	if sh "$script"; then
+		logger -t "$PROG" "firstboot commands completed"
+	else
+		logger -t "$PROG" "firstboot commands failed"
+	fi
+	rm -f "$script"
+}
+
+# ------------------------------------------------ user-data (host/pwd) --
+apply_user_data() {
+	local ud="$CIDATA/user-data"
+	[ -f "$ud" ] || return 0
+
+	local host ci_user ci_pass
+	host=$(awk -F': *' '$1=="hostname"||$1=="fqdn"{print $2;exit}' "$ud" | tr -d ' "')
+	if [ -n "$host" ]; then
+		# `uci commit system` обязателен: без него имя остаётся в staging,
+		# а staging лежит в tmpfs. Образ по замыслу перезагружается дважды
+		# (70-rootpt-resize и 80-rootfs-resize), и незакоммиченное имя
+		# пропадало. Раньше оно уцелевало только по совпадению тайминга.
+		uci set system.@system[0].hostname="$host"
+		uci commit system
+	fi
+
+	# Плоские ключи — диалект Proxmox: их пишет сам гипервизор при
+	# `bs compose up`.
+	ci_user=$(awk -F': *' '$1=="user"{print $2;exit}' "$ud" | tr -d ' "')
+	ci_pass=$(awk -F': *' '$1=="password"{print $2;exit}' "$ud" | tr -d ' "')
+
+	# Пользователей задаёт ОДИН из двух диалектов, и плоский побеждает список
+	# `users:` — так было и раньше. Изменилось другое: прежде плоская ветка
+	# выходила из функции целиком (`return 0`), унося с собой не только список
+	# `users:`, но и `apply_root_password`, и `stage_runcmd` внизу. Сид, где
+	# рядом с плоским `user:` стоит `chpasswd:` или `runcmd:`, применялся
+	# не полностью — и молчал об этом, а тихо недоприменённый сид тут самый
+	# дорогой вид отказа.
+	#
+	# Цену надо назвать честно: ни один из двух поддерживаемых путей этим
+	# не бился. `bs compose up` ставит пароль root на сборке через
+	# `virt-customize`, а не сидом, и кладёт firstboot-команды прямо
+	# в $FIRSTBOOT_SCRIPT; `bs device write` пишет список `users:`, а не
+	# плоский ключ, то есть шёл второй веткой и до низа функции доходил.
+	# Это была ловушка для сида, написанного руками или смешанного, а не
+	# действующий отказ.
+	if [ -n "$ci_user" ]; then
+		if [ -n "$ci_pass" ]; then
+			create_ci_admin "$ci_user" "$ci_pass" || \
+				logger -t "$PROG" "failed to provision user $ci_user"
+			install_ssh_keys "$ci_user" "$ud"
+		else
+			logger -t "$PROG" "user '$ci_user' requested but password missing"
+		fi
+	else
+		# Список `users:` — стандартный cloud-config, его пишет `bs device write`.
+		# `create_ci_admin` готовый хеш пропускает как есть: `prepare_password_hash`
+		# отдаёт без изменений всё, что начинается с `$`.
+		parse_users "$ud" | while IFS='|' read -r name hash; do
+			[ -n "$name" ] || continue
+			if [ -z "$hash" ]; then
+				logger -t "$PROG" "user '$name' requested but password missing"
+				continue
+			fi
+			create_ci_admin "$name" "$hash" || \
+				logger -t "$PROG" "failed to provision user $name"
+			install_ssh_keys "$name" "$ud"
+		done
+	fi
+
+	apply_root_password "$ud"
+	stage_runcmd "$ud"
+}
+
+# --------------------------------------------------- пароль root --------
+# Бисквит пишет его через `chpasswd: list: - root:$6$…`, а не в списке
+# `users:`. Раньше это не читалось, и устройство приезжало с ПУСТЫМ паролем
+# root — то есть в дефолтном состоянии OpenWrt, хотя манифест просил другое.
+apply_root_password() {
+	local hash
+	hash=$(parse_root_password "$1")
+	[ -n "$hash" ] || return 0
+
+	ensure_system_files
+	if ! grep -q '^root:' /etc/shadow 2>/dev/null; then
+		printf 'root:!:0:0:99999:7:::\n' >> /etc/shadow
+	fi
+	update_shadow_entry root "$hash"
+	logger -t "$PROG" "root password set from seed"
+}
+
+# ------------------------------------------------ firstboot из runcmd ---
+# Команды манифеста бисквит кладёт в `runcmd:`. Отдельного механизма для них
+# не заводим: выгружаем в тот же скрипт, который наполняет Proxmox-адаптер,
+# и его выполняет уже существующий run_firstboot_commands — с логированием и
+# удалением после запуска.
+stage_runcmd() {
+	local cmds
+	[ -s "$FIRSTBOOT_SCRIPT" ] && return 0
+
+	cmds=$(parse_runcmd "$1")
+	[ -n "$cmds" ] || return 0
+
+	mkdir -p "$(dirname "$FIRSTBOOT_SCRIPT")" 2>/dev/null || return 0
+	{
+		echo '#!/bin/sh'
+		printf '%s\n' "$cmds"
+	} > "$FIRSTBOOT_SCRIPT"
+	chmod +x "$FIRSTBOOT_SCRIPT" 2>/dev/null || true
+	logger -t "$PROG" "staged $(printf '%s\n' "$cmds" | wc -l) runcmd entries"
+}
+
+# ------------------------------------------------------- ssh-ключи ------
+# Раньше `ssh_authorized_keys` не обрабатывался вовсе: ключи из манифеста
+# бисквита доезжали до карты и там оставались. Ключи кладутся и пользователю,
+# и root — dropbear на OpenWrt читает authorized_keys обоих.
+#
+# Что означает второй каталог, и это решение, а не деталь: ключ пользователя,
+# положенный в `/etc/dropbear/authorized_keys`, даёт вход ПОД ROOT. Так ведёт
+# себя код с самого начала, записи об умысле в репозитории нет, и эта работа
+# поведение не меняет — только перестаёт его удваивать. Развести два хранилища
+# (ключи пользователя — только в его `~/.ssh`) или оставить как есть — решение
+# владельца; до него `/etc/dropbear` читается как «любой пользователь из сида
+# получает root по своему ключу».
+install_ssh_keys() {
+	local user=$1 file=$2 home keys dir
+
+	keys=$(parse_ssh_keys "$file" "$user")
+	[ -n "$keys" ] || return 0
+
+	home=$(user_field "$user" 6)
+	[ -n "$home" ] || home="/home/$user"
+
+	for dir in "$home/.ssh" /etc/dropbear; do
+		[ -d "$dir" ] || mkdir -p "$dir" || continue
+		# Не `>>`: при повторном провижне дописывание удваивало строки.
+		# Почему не `>` — см. merge_authorized_keys в lib/authkeys.sh:
+		# /etc/dropbear/authorized_keys общий на всех пользователей сида.
+		merge_authorized_keys "$dir/authorized_keys" "$keys" || \
+			logger -t "$PROG" "failed to write $dir/authorized_keys"
+		chmod 0700 "$dir" 2>/dev/null || true
+		chmod 0600 "$dir/authorized_keys" 2>/dev/null || true
+	done
+	chown -R "$user:$user" "$home/.ssh" 2>/dev/null || true
+	logger -t "$PROG" "ssh keys installed for $user"
+}
+
+# -------------------------- CI user helpers ----------------------------
+uci_cmd() {
+	uci "$@" >/dev/null 2>&1 || {
+		logger -t "$PROG" "uci $* failed"
+		return 1
+	}
+}
+
+validate_username() {
+	case "$1" in
+		''|root) return 1 ;;
+		*[!a-zA-Z0-9_-]*) return 1 ;;
+	esac
+	[ "${#1}" -le 32 ]
+}
+
+next_id_from() {
+	local file=$1 floor=${2:-1000}
+	[ -f "$file" ] || return 1
+	awk -F: -v floor="$floor" '
+		BEGIN{max=floor-1}
+		$3>=floor && $3>max {max=$3}
+		END{print max+1}
+	' "$file"
+}
+
+hash_password() {
+	local plain=$1 hashed=
+
+	if command -v mkpasswd >/dev/null 2>&1; then
+		if hashed=$(mkpasswd -m sha512 "$plain" 2>/dev/null); then
+			printf '%s\n' "$hashed"
+			return 0
+		elif hashed=$(mkpasswd -m sha-512 "$plain" 2>/dev/null); then
+			printf '%s\n' "$hashed"
+			return 0
+		elif hashed=$(mkpasswd "$plain" 2>/dev/null); then
+			printf '%s\n' "$hashed"
+			return 0
+		fi
+	fi
+
+	if command -v openssl >/dev/null 2>&1; then
+		if hashed=$(openssl passwd -6 "$plain" 2>/dev/null); then
+			printf '%s\n' "$hashed"
+			return 0
+		fi
+	fi
+
+	if command -v python3 >/dev/null 2>&1; then
+		if hashed=$(python3 - "$plain" <<'PY' 2>/dev/null
+import crypt
+import secrets
+import string
+import sys
+
+alphabet = string.ascii_letters + string.digits + './'
+salt = ''.join(secrets.choice(alphabet) for _ in range(16))
+print(crypt.crypt(sys.argv[1], '$6$' + salt))
+PY
+		); then
+			printf '%s\n' "$hashed"
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+prepare_password_hash() {
+	case "$1" in
+		\$*) printf '%s\n' "$1"; return 0 ;;
+	esac
+	hash_password "$1"
+}
+
+ensure_system_files() {
+	# `local` обязателен: в dash область видимости динамическая, и цикл без
+	# него затирает переменную ВЫЗЫВАЮЩЕГО. Именно так `apply_user_data`
+	# теряла путь к user-data — после create_ci_admin её `$f` становился
+	# `/etc/shadow`, и ssh-ключи искались не в том файле.
+	local f
+	for f in /etc/passwd /etc/group /etc/shadow; do
+		[ -f "$f" ] || touch "$f"
+	done
+	chmod 0644 /etc/passwd /etc/group >/dev/null 2>&1 || true
+	chmod 0600 /etc/shadow >/dev/null 2>&1 || true
+}
+
+group_gid_by_name() {
+	awk -F: -v name="$1" '$1==name{print $3; exit}' /etc/group
+}
+
+user_uid_by_name() {
+	awk -F: -v name="$1" '$1==name{print $3; exit}' /etc/passwd
+}
+
+user_field() {
+	awk -F: -v name="$1" -v idx="$2" '$1==name{print $idx; exit}' /etc/passwd
+}
+
+ensure_group() {
+	local name=$1 gid
+	gid=$(group_gid_by_name "$name")
+	if [ -n "$gid" ]; then
+		printf '%s\n' "$gid"
+		return 0
+	fi
+	gid=$(next_id_from /etc/group 1000) || return 1
+	printf '%s:x:%s:\n' "$name" "$gid" >> /etc/group
+	printf '%s\n' "$gid"
+}
+
+update_passwd_entry() {
+	local name=$1 uid=$2 gid=$3 comment=$4 home=$5 shell=$6
+	local tmp need_update=0 cur_home cur_shell cur_comment
+
+	if grep -q "^$name:" /etc/passwd; then
+		cur_home=$(user_field "$name" 6)
+		cur_shell=$(user_field "$name" 7)
+		cur_comment=$(user_field "$name" 5)
+		[ "$cur_home" = "$home" ] || need_update=1
+		[ "$cur_shell" = "$shell" ] || need_update=1
+		[ -n "$cur_comment" ] || need_update=1
+
+		if [ "$need_update" -eq 1 ]; then
+			tmp=$(mktemp /tmp/passwd.XXXXXX)
+			awk -F: -v OFS=":" -v name="$name" -v home="$home" -v shell="$shell" -v comment="$comment" '
+				$1==name {
+					if($5=="") $5=comment
+					$6=home
+					$7=shell
+				}
+				{print}
+			' /etc/passwd > "$tmp"
+			cat "$tmp" > /etc/passwd && rm -f "$tmp"
+		fi
+	else
+		printf '%s:x:%s:%s:%s:%s:%s\n' "$name" "$uid" "$gid" "$comment" "$home" "$shell" >> /etc/passwd
+	fi
+}
+
+update_shadow_entry() {
+	local name=$1 hash=$2 tmp now days
+	now=$(date +%s 2>/dev/null || echo 0)
+	days=$((now / 86400))
+	tmp=$(mktemp /tmp/shadow.XXXXXX)
+	awk -F: -v OFS=":" -v name="$name" -v hash="$hash" -v lastchg="$days" '
+		$1==name { $2=hash; $3=lastchg; found=1 }
+		{ print }
+		END{
+			if(!found){
+				printf "%s:%s:%s:0:99999:7:::\n", name, hash, lastchg
+			}
+		}
+	' /etc/shadow > "$tmp"
+	cat "$tmp" > /etc/shadow && rm -f "$tmp"
+	chmod 0600 /etc/shadow >/dev/null 2>&1 || true
+}
+
+ensure_home() {
+	local home=$1 owner=$2 group=$3
+	mkdir -p "$home"
+	chown "$owner:$group" "$home"
+	chmod 750 "$home"
+}
+
+rpcd_acl_has_value() {
+	# shellcheck disable=SC2318
+	local section=$1 field=$2 value=$3 key="rpcd.$section.$field"
+	uci -q show "$key" 2>/dev/null | grep -F "$key='$value'" >/dev/null 2>&1
+}
+
+ensure_rpcd_acl_value() {
+	local section=$1 field=$2 value=$3 key
+	key="rpcd.$section.$field"
+	rpcd_acl_has_value "$section" "$field" "$value" || uci_cmd add_list "$key=$value"
+}
+
+rpcd_acl_present() {
+	local section=$1 field
+	for field in read write; do
+		rpcd_acl_has_value "$section" "$field" '*' || return 1
+	done
+	return 0
+}
+
+configure_rpcd_login() {
+	local user=$1 section pass_ref
+	pass_ref="\$p\$${user}"
+	# Имя секции — само имя пользователя. Здесь стояло
+	# `section="${RPCD_SECTION_PREFIX}${user}"`, но эта переменная не
+	# присваивалась нигде: ни в этом файле, ни в `lib/`, ни в окружении, —
+	# то есть секция всегда была просто `rpcd.<имя>`. Замысла в истории тоже
+	# нет: `git log -S RPCD_SECTION_PREFIX --all` даёт один коммит, `28b1561
+	# refactor: group extensions by OS`, которым файл и приехал в репозиторий.
+	#
+	# Префикс задавать НЕЛЬЗЯ, и это не стилистика. Префикс — это
+	# ПЕРЕИМЕНОВАНИЕ секции UCI: устройство, провижненное прежним кодом,
+	# несёт `rpcd.<имя>`, повторный провижн создал бы `rpcd.<префикс><имя>`,
+	# а прежняя секция осталась бы на месте — два входа в LuCI на одного
+	# пользователя. Вводить префикс можно только вместе с удалением прежней
+	# секции, то есть отдельным осознанным решением о миграции, а не
+	# вдогонку опечатке.
+	section="$user"
+
+	uci -q delete rpcd."$section" || true
+	uci_cmd set rpcd."$section"=login || return 1
+	uci_cmd set rpcd."$section".username="$user" || return 1
+	uci_cmd set rpcd."$section".password="$pass_ref" || return 1
+	uci -q delete rpcd."$section".read || true
+	uci -q delete rpcd."$section".write || true
+	ensure_rpcd_acl_value "$section" read '*'
+	ensure_rpcd_acl_value "$section" write '*'
+	uci_cmd commit rpcd || return 1
+
+	rpcd_acl_present "$section" || return 1
+
+	if [ -x /etc/init.d/rpcd ]; then
+		/etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+	fi
+}
+
+ensure_root_rpcd_login() {
+	configure_rpcd_login root || \
+		logger -t "$PROG" "failed to provision root rpcd login"
+}
+
+create_ci_admin() {
+	local username=$1 password=$2 home shell comment uid gid hash
+
+	if ! validate_username "$username"; then
+		logger -t "$PROG" "invalid ci username '$username'"
+		return 1
+	fi
+
+	ensure_system_files
+	hash=$(prepare_password_hash "$password") || {
+		logger -t "$PROG" "failed to hash password for $username"
+		return 1
+	}
+
+	gid=$(ensure_group "$username") || {
+		logger -t "$PROG" "failed to ensure group for $username"
+		return 1
+	}
+
+	if id "$username" >/dev/null 2>&1; then
+		uid=$(user_uid_by_name "$username")
+	else
+		uid=$(next_id_from /etc/passwd 1000) || return 1
+	fi
+
+	home="/home/$username"
+	shell="/bin/ash"
+	comment="OpenWrt admin ($username)"
+
+	update_passwd_entry "$username" "$uid" "$gid" "$comment" "$home" "$shell"
+	update_shadow_entry "$username" "$hash"
+	ensure_home "$home" "$username" "$username"
+	configure_rpcd_login "$username" || logger -t "$PROG" "rpcd ACL setup failed for $username"
+
+	logger -t "$PROG" "ci user $username provisioned"
+}
+
+# ------------------------- uhttpd helper --------------------------------
+ensure_uhttpd_ready() {
+	local crt=/etc/uhttpd.crt key=/etc/uhttpd.key
+	if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
+		/usr/lib/uhttpd/keygen.sh "$crt" "$key" >/dev/null 2>&1 || true
+	fi
+	if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
+		uci set uhttpd.main.redirect_https='0'
+		uci -q delete uhttpd.main.listen_https
+	else
+		uci set uhttpd.main.redirect_https='1'
+	fi
+}
+
+# --------------------------- purge helpers ------------------------------
+purge_package() {                # $1 = network | dhcp | firewall
+	uci -q show "$1" | cut -d'.' -f2 | cut -d'=' -f1 | \
+	while read -r s; do uci -q delete "$1.$s"; done
+	uci commit "$1"
+}
+
+# ------------------------------------------------- net-config -----------
+apply_network_config() {
+	local nf="$CIDATA/network-config"
+	[ -f "$nf" ] || return 0
+	# Валидация тоже по обеим версиям: v2 приезжает от `bs device write`.
+	if ! parse_netcfg_any "$nf" | grep -q '^[^|][^|]*|'; then
+		logger -t "$PROG" "network-config невалиден (нет WAN) — пропуск, текущая сеть сохранена"
+		return 1
+	fi
+	logger -t "$PROG" "applying network-config"
+
+	# ---------- DNS ---------------------------------------------------
+	IFS='|' read -r DNS SEARCH <<EOF
+$(read_dns_any "$nf")
+EOF
+	DNS=$(echo "$DNS" | tr -d ' ')
+	: > /etc/resolv.conf.head
+	[ -n "$SEARCH" ] && echo "search $SEARCH"  >> /etc/resolv.conf.head
+	[ -n "$DNS"    ] && echo "nameserver $DNS" >> /etc/resolv.conf.head
+	cp /etc/resolv.conf.head /etc/resolv.conf
+
+	# ---------- clean network/dhcp -----------------------------------
+	purge_package network
+	purge_package dhcp
+
+	# dnsmasq base section (обязательно)
+	uci add dhcp dnsmasq >/dev/null
+	uci set dhcp.@dnsmasq[0].domainneeded='1'
+	uci set dhcp.@dnsmasq[0].authoritative='1'
+
+	uci set network.loopback=interface
+	uci set network.loopback.device='lo'
+	uci set network.loopback.proto='static'
+	uci set network.loopback.ipaddr='127.0.0.1'
+	uci set network.loopback.netmask='255.0.0.0'
+
+	local LAN_DEVS="" idx=0
+	while IFS='|' read -r IFACE PROTO IP NM GW; do
+		[ -z "$IFACE" ] && continue
+		if [ "$idx" -eq 0 ]; then
+			# ------- WAN (eth0) ---------------------------------------
+			uci set network.wan=interface
+			uci set network.wan.device="$IFACE"
+			uci set network.wan.proto="$PROTO"
+			if [ "$PROTO" = "static" ]; then
+				uci set network.wan.ipaddr="$IP"
+				uci set network.wan.netmask="$NM"
+				uci set network.wan.gateway="$GW"
+			fi
+			[ -n "$DNS" ] && {
+				uci set network.wan.peerdns='0'
+				uci set network.wan.dns="$DNS"
+			}
+		else
+			# ------- LANs --------------------------------------------
+			if [ "$idx" -eq 1 ]; then
+				NAME="lan"
+				BRDEV="br-lan"
+			else
+				NAME="lan$((idx-1))"
+				BRDEV="br-lan$((idx-1))"
+			fi
+
+			# LAN всегда через мост: чтобы к нему можно было
+			# добавлять Wi-Fi AP (phy*-ap*) и доп. порты.
+			# Имя uci-секции — без дефисов (br_lan), netdev — br-lan.
+			BRSEC=$(echo "$BRDEV" | tr -- '-' '_')
+			uci set network."$BRSEC"=device
+			uci set network."$BRSEC".name="$BRDEV"
+			uci set network."$BRSEC".type='bridge'
+			uci add_list network."$BRSEC".ports="$IFACE"
+
+			uci set network."$NAME"=interface
+			uci set network."$NAME".device="$BRDEV"
+
+			if [ "$PROTO" = "static" ]; then
+				# ---- static + DHCP-server ----------------------------
+				uci set network."$NAME".proto='static'
+				uci set network."$NAME".ipaddr="$IP"
+				uci set network."$NAME".netmask="$NM"
+
+				uci set dhcp."$NAME"=dhcp
+				uci set dhcp."$NAME".interface="$NAME"
+				uci set dhcp."$NAME".start='10'
+				uci set dhcp."$NAME".limit='150'
+				uci set dhcp."$NAME".leasetime='12h'
+			else
+				# ---- DHCP-client -------------------------------------
+				uci set network."$NAME".proto='dhcp'
+			fi
+			LAN_DEVS="$LAN_DEVS $BRDEV"
+		fi
+		idx=$((idx+1))
+	done <<EOF
+$(parse_netcfg_any "$nf")
+EOF
+
+	uci commit network
+	uci commit dhcp
+
+	# ---------- firewall (reset) -------------------------------------
+	purge_package firewall
+
+	uci add firewall defaults
+	uci set firewall.@defaults[0].input='ACCEPT'
+	uci set firewall.@defaults[0].output='ACCEPT'
+	uci set firewall.@defaults[0].forward='DROP'
+	uci set firewall.@defaults[0].synflood_protect='1'
+
+	# ---- LAN zone ----------------------------------------------------
+	uci add firewall zone
+	uci set firewall.@zone[-1].name='lan'
+	uci set firewall.@zone[-1].input='ACCEPT'
+	uci set firewall.@zone[-1].output='ACCEPT'
+	uci set firewall.@zone[-1].forward='ACCEPT'
+	for d in $LAN_DEVS; do
+		uci add_list firewall.@zone[-1].device="$d"
+	done
+
+	# ---- WAN zone ----------------------------------------------------
+	uci add firewall zone
+	uci set firewall.@zone[-1].name='wan'
+	uci set firewall.@zone[-1].input='ACCEPT'   # нужен доступ к LuCI
+	uci set firewall.@zone[-1].output='ACCEPT'
+	uci set firewall.@zone[-1].forward='DROP'
+	uci add_list firewall.@zone[-1].device="$(uci get network.wan.device)"
+	uci set firewall.@zone[-1].masq='1'
+	uci set firewall.@zone[-1].mtu_fix='1'
+
+	# ---- правило LuCI ------------------------------------------------
+	uci add firewall rule
+	uci set firewall.@rule[-1].name='Allow-LuCI-from-WAN'
+	uci set firewall.@rule[-1].src='wan'
+	uci set firewall.@rule[-1].proto='tcp'
+	uci set firewall.@rule[-1].dest_port='80 443'
+	uci set firewall.@rule[-1].target='ACCEPT'
+
+	uci commit firewall
+
+	# ---------- uhttpd -----------------------------------------------
+	uci -q delete uhttpd.main.listen_http
+	uci -q delete uhttpd.main.listen_https
+	uci add_list uhttpd.main.listen_http='0.0.0.0:80'
+	uci add_list uhttpd.main.listen_https='0.0.0.0:443'
+	uci set uhttpd.main.rfc1918_filter='0'
+	ensure_uhttpd_ready
+	uci commit uhttpd
+	[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd enable
+
+	# ---------- apply -------------------------------------------------
+	killall -q udhcpc 2>/dev/null || true
+	/etc/init.d/network  restart
+	/etc/init.d/dnsmasq enable
+	/etc/init.d/dnsmasq restart
+	/etc/init.d/firewall restart
+	[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart
+	return 0
+}
+
+# --------------------------------------------------------------- main --
+start_service() {
+	local SEED_ID
+	load_libs || {
+		logger -t "$PROG" "FATAL: нет lib в $WRT_LIBDIR — abort (сеть не трогаем)"
+		mark_cloudinit_ready
+		return 1
+	}
+
+	mount_cidata || { logger -t "$PROG" "cidata not found – skip"; mark_cloudinit_ready; return 0; }
+
+	[ -f "$CIDATA/meta-data" ] && \
+		logger -t "$PROG" "instance-id: $(get_seed_instance_id "$CIDATA/meta-data")"
+
+	SEED_ID=$(get_seed_instance_id "$CIDATA/meta-data")
+	: "${SEED_ID:=nocloud}"
+
+	if already_provisioned "$SEED_ID"; then
+		logger -t "$PROG" "instance '$SEED_ID' already provisioned — per-boot only"
+		mark_cloudinit_ready
+		umount_cidata
+		return 0
+	fi
+
+	logger -t "$PROG" "provisioning instance '$SEED_ID'"
+	apply_user_data
+	ensure_root_rpcd_login
+	if apply_network_config; then
+		run_firstboot_commands
+		mark_provisioned "$SEED_ID" && \
+			logger -t "$PROG" "instance '$SEED_ID' provisioned"
+	else
+		logger -t "$PROG" "network provisioning failed — retry next boot"
+	fi
+
+	mark_cloudinit_ready
+	umount_cidata
+}
+
+stop_service() { :; }

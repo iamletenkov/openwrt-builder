@@ -1,0 +1,61 @@
+#!/bin/sh
+# Расширить корневую ФАЙЛОВУЮ СИСТЕМУ на весь раздел.
+#
+# Раскладок две, и ведут они себя по-разному.
+#
+# squashfs+overlay: корень только для чтения, растёт loop с overlay. Ему
+# достаточно `losetup -c` (перечитать ёмкость раздела) и онлайн-ресайза —
+# перезагрузка не нужна.
+#
+# ext4-combined: overlay нет, корень смонтирован напрямую. Онлайн-ресайз
+# смонтированного корня на этом ядре расширяет ФС НЕ ПОЛНОСТЬЮ: замер дал
+# 622 МБ вместо 2.9 ГБ на трёхгигабайтном разделе, причём resize2fs вышел
+# нулём. Поэтому здесь по-прежнему loop плюс перезагрузка — путь, который
+# даёт правильный размер.
+#
+# Успех живого пути проверяется ЗАПОЛНЕНИЕМ раздела, а не фактом роста:
+# «выросло» было правдой и в неполном случае.
+
+if [ ! -e /etc/rootfs-resize ] \
+&& [ -e /etc/rootpt-resize ] \
+&& type losetup > /dev/null \
+&& type resize2fs > /dev/null \
+&& lock -n /var/lock/root-resize
+then
+ROOT_BLK="$(readlink -f /sys/dev/block/"$(awk -e \
+'$9=="/dev/root"{print $3}' /proc/self/mountinfo)")"
+ROOT_DEV="/dev/${ROOT_BLK##*/}"
+LOOP_DEV="$(awk -e '$5=="/overlay"{print $9}' \
+/proc/self/mountinfo)"
+PART_KB="$(awk '{print int($1/2)}' "${ROOT_BLK}/size" 2>/dev/null)"
+
+if [ -n "${LOOP_DEV}" ]
+then
+# overlay: пробуем без перезагрузки
+losetup -c "${LOOP_DEV}" > /dev/null 2>&1
+KB_BEFORE="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $2}')"
+resize2fs -f "${LOOP_DEV}"
+KB_AFTER="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $2}')"
+mount_root done
+touch /etc/rootfs-resize
+if [ -n "${KB_AFTER}" ] && [ -n "${PART_KB}" ] \
+&& [ "$(( KB_AFTER * 100 / PART_KB ))" -ge 90 ]
+then
+logger -t rootfs-resize "overlay grown live (${KB_BEFORE:-?} -> ${KB_AFTER} of ${PART_KB} KiB)"
+lock -u /var/lock/root-resize
+exit 1
+fi
+logger -t rootfs-resize "live resize incomplete (${KB_AFTER:-?} of ${PART_KB:-?} KiB), rebooting"
+reboot
+exit 1
+fi
+
+# ext4-combined: только loop и перезагрузка — онлайн-путь здесь неполон.
+LOOP_DEV="$(losetup -f)"
+losetup "${LOOP_DEV}" "${ROOT_DEV}"
+resize2fs -f "${LOOP_DEV}"
+mount_root done
+touch /etc/rootfs-resize
+reboot
+fi
+exit 1
