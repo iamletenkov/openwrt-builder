@@ -143,6 +143,8 @@ if [[ -d "$FILES_DIR" ]]; then cp -a "$FILES_DIR/." "$STAGE/"; fi
 chmod 0755 "$STAGE"/etc/uci-defaults/* "$STAGE"/etc/init.d/* 2>/dev/null || true
 
 # ---------- 6. Сборка ----------
+# rootfs.tar.gz нужен шагу 7 (пересборка ext4); у bcm27xx он по умолчанию выключен.
+sed -i 's/^# CONFIG_TARGET_ROOTFS_TARGZ is not set$/CONFIG_TARGET_ROOTFS_TARGZ=y/' "$IB_DIR/.config"
 mkdir -p "$OUT_DIR"
 make -C "$IB_DIR" -j"$JOBS" image \
      PROFILE="$PROFILE" \
@@ -152,7 +154,72 @@ make -C "$IB_DIR" -j"$JOBS" image \
      FILES="$STAGE" \
      BIN_DIR="$OUT_DIR"
 
-# ---------- 7. qcow2 для ВМ (x86, armsr) ----------
+# ---------- 7. Пересборка ext4 корня через mke2fs ----------
+# make_ext4fs, которым ImageBuilder делает ext4, оставляет ФС, которую ядро
+# не умеет расширять онлайн: resize2fs на смонтированном корне растит её на
+# одну группу и падает с EINVAL (ext4_group_extend: can't shrink FS). Отсюда
+# в прежнем 80-rootfs-resize офлайн-resize2fs через loop поверх
+# смонтированного корня — опасный обход. Здесь корень пересобирается
+# mke2fs -d из того же rootfs.tar (flex_bg, 64bit, корректный resize_inode),
+# с тем же UUID и меткой, и вписывается в образ на место раздела 2.
+# Метаданные fwtool в хвосте .img.gz при этом теряются: sysupgrade такого
+# образа потребует -F (обновление ОС вне рамок, образ — для первой установки).
+ROOTFS_TAR=""
+shopt -s nullglob
+for f in "$OUT_DIR"/*-rootfs.tar.gz; do ROOTFS_TAR=$f; break; done
+shopt -u nullglob
+rebuild_ext4() { # <raw-образ ФС или диска> <смещение байт> <размер байт>
+  local img=$1 off=$2 size=$3 part uuid
+  part=$(mktemp "$CACHE_DIR/part.XXXXXX")
+  dd if="$img" of="$part" bs=1M iflag=skip_bytes,count_bytes skip="$off" count="$size" status=none
+  if [[ "$(blkid -p -s LABEL -o value "$part" 2>/dev/null)" != rootfs ]] || \
+     [[ "$(blkid -p -s TYPE -o value "$part" 2>/dev/null)" != ext4 ]]; then
+    rm -f "$part"; return 1
+  fi
+  uuid=$(blkid -p -s UUID -o value "$part")
+  rm -f "$part"
+  truncate -s "$size" "$part"
+  # Функция зовётся в условии (set -e там не действует): ошибки — явно и фатально.
+  mke2fs -q -F -t ext4 -L rootfs -U "$uuid" -m 0 -E root_owner=0:0 -d "$ROOTFS_RAW" "$part" \
+    || { echo "→ mke2fs не собрал корень для $(basename "$img")" >&2; exit 1; }
+  dd if="$part" of="$img" bs=1M oflag=seek_bytes seek="$off" conv=notrunc status=none \
+    || { echo "→ dd не вписал корень в $(basename "$img")" >&2; exit 1; }
+  rm -f "$part"
+}
+shopt -s nullglob
+if [[ -n "$ROOTFS_TAR" ]]; then
+  ROOTFS_RAW="$CACHE_DIR/rootfs.tar"
+  gzip -dc "$ROOTFS_TAR" > "$ROOTFS_RAW"
+  for img_gz in "$OUT_DIR"/*-ext4-*.img.gz; do
+    raw="${img_gz%.gz}"
+    rc=0; gzip -dc "$img_gz" > "$raw" || rc=$?
+    (( rc == 0 || rc == 2 )) || { echo "→ gzip: код $rc на $(basename "$img_gz")" >&2; exit "$rc"; }
+    done_ok=0
+    if [[ "$img_gz" == *-ext4-rootfs.img.gz ]]; then
+      rebuild_ext4 "$raw" 0 "$(stat -c %s "$raw")" && done_ok=1
+    else
+      # раздел 2 — корень у x86, armsr и bcm27xx
+      read -r start sectors < <(sfdisk -d "$raw" 2>/dev/null | \
+        awk -F'[ ,=]+' '/^[^ ]+2 :/ { for (i = 1; i < NF; i++) { if ($i == "start") s = $(i + 1); if ($i == "size") z = $(i + 1) } print s, z }')
+      if [[ -n "${start:-}" ]]; then
+        rebuild_ext4 "$raw" $((start * 512)) $((sectors * 512)) && done_ok=1
+      fi
+    fi
+    if (( done_ok )); then
+      gzip -9n -c "$raw" > "$img_gz"
+      echo "   • ext4 пересобран: $(basename "$img_gz")"
+    else
+      echo "   ! ext4 не найден в $(basename "$img_gz"), оставлен как есть"
+    fi
+    rm -f "$raw"
+  done
+  rm -f "$ROOTFS_RAW"
+else
+  echo "   ! нет rootfs.tar.gz — ext4 не пересобран (онлайн-ресайз корня не сработает)" >&2
+fi
+shopt -u nullglob
+
+# ---------- 8. qcow2 для ВМ (x86, armsr) ----------
 prefix="openwrt-${OPENWRT_RELEASE}-custom-${TS}"
 shopt -s nullglob
 case "$TARGET" in
