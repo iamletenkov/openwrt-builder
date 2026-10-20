@@ -1,0 +1,10 @@
+# Сторонние .apk только для x86/64 (формат — см. local-packages.txt).
+#
+# AmneziaWG под OpenWrt 25.12.6: сборка SDK релиза из исходников
+# amnezia-vpn/amneziawg-linux-kernel-module и amneziawg-tools
+# (https://github.com/Slava-Shchipunov/awg-openwrt, релиз v25.12.6).
+# ⚠ kmod-amneziawg зависит от kernel=<версия>~<vermagic> ровно этого релиза
+#   и таргета: при смене OPENWRT_RELEASE пины меняются вместе с ним.
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.6/kmod-amneziawg_v25.12.6_x86_64_x86_64.apk 641246b68ebe740360602916d0d6301ff85c7a6f9804aeb290323b016d82c977
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.6/amneziawg-tools_v25.12.6_x86_64_x86_64.apk 2dbe5a742df33fdf06064c9f3df5c01b50457c47f2030be57066aa93eb988eb3
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.6/luci-proto-amneziawg_v25.12.6_x86_64_x86_64.apk fc445e52127973b2ed353595215fd4e5d94e3ff49cc36d92c8892e3d8c4197e8

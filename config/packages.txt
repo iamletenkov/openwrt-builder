@@ -64,8 +64,9 @@ luci-theme-material
 luci-theme-bootstrap
 luci-theme-openwrt
 luci-theme-openwrt-2020
-# luci-theme-argon, luci-app-argon-config, luci-theme-edge — только во фиде
-# openwrt.ai (kiddin9), его формат под apk/25.12 не проверен; см. feeds.txt
+# Argon — сторонний .apk (github.com/jerrykuku/luci-theme-argon), пин в
+# config/local-packages.txt; настройки темы встроены в неё (3.x)
+luci-theme-argon
 
 
 ############################################################
@@ -143,9 +144,11 @@ openvpn-easy-rsa
 wireguard-tools
 kmod-wireguard
 luci-proto-wireguard
-### AmneziaWG — сторонние .apk под конкретное ядро 25.12.x; подключаются через
-# config/local-packages.txt (URL + sha256) и строками сюда: kmod-amneziawg,
-# amneziawg-tools, luci-proto-amneziawg. В официальных фидах их нет.
+### AmneziaWG (обфусцированный WireGuard) — сторонние .apk под ядро релиза,
+# пины по таргетам: config/local-packages-<target>-<subtarget>.txt
+kmod-amneziawg
+amneziawg-tools
+luci-proto-amneziawg
 ### OpenVPN (есть)
 openvpn-openssl
 luci-app-openvpn
@@ -161,7 +164,10 @@ luci-proto-ppp
 ### OpenConnect
 openconnect
 luci-proto-openconnect
-### Podkop — сторонние .apk (github.com/itdoginfo/podkop), через local-packages.txt
+### Podkop — выборочная маршрутизация, сторонние .apk (github.com/itdoginfo/podkop),
+# пины в config/local-packages.txt; sing-box и прочие зависимости — из офиц. фидов
+podkop
+luci-app-podkop
 sing-box
 
 
