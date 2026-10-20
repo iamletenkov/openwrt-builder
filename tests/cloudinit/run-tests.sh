@@ -311,4 +311,70 @@ assert_eq "seed: squashfs, root_disk по /rom = vda" "vda" "$(root_disk)"
 unset WRT_SYS WRT_MOUNTINFO WRT_CPUINFO
 rm -rf "$FS"
 
+# --- luci.sh: LuCI с WAN закрыта, пока пароль root пуст ---
+# Дыра: сид без единого пароля оставлял root с пустым паролем, а правило
+# «LuCI с WAN» открытым — rpcd пускал в LuCI под root без пароля из WAN.
+# uci подменяется функцией поверх файла «ключ=значение».
+LT=$(mktemp -d)
+UCI_DB="$LT/uci"; : > "$UCI_DB"
+uci() {
+	[ "$1" = -q ] && shift
+	case "$1" in
+		get) awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); f = 1 } END { exit !f }' "$UCI_DB" ;;
+		set) grep -v "^${2%%=*}=" "$UCI_DB" > "$UCI_DB.t"; echo "$2" >> "$UCI_DB.t"; mv "$UCI_DB.t" "$UCI_DB" ;;
+		commit) echo "$2" >> "$LT/commits" ;;
+	esac
+}
+WRT_SHADOW="$LT/shadow"
+printf 'root:::0:99999:7:::\n' > "$WRT_SHADOW"
+if root_password_empty; then pass "root_password_empty: пустое поле → пуст"; else die "root_password_empty: пустое поле → пуст"; fi
+printf 'daemon:*:0:0:99999:7:::\n' > "$WRT_SHADOW"
+if root_password_empty; then pass "root_password_empty: строки root нет → пуст"; else die "root_password_empty: строки root нет → пуст"; fi
+if luci_wan_sync; then die "luci_wan_sync: нет правила → ничего"; else pass "luci_wan_sync: нет правила → ничего"; fi
+# Правило заводит apply_network_config без enabled, то есть включённым.
+uci set firewall.wrt_luci_wan=rule
+printf 'root:::0:99999:7:::\n' > "$WRT_SHADOW"
+if luci_wan_sync; then pass "luci_wan_sync: пустой пароль → правило меняется"; else die "luci_wan_sync: пустой пароль → правило меняется"; fi
+assert_eq "luci_wan_sync: пустой пароль → LuCI с WAN выключена" "0" "$(uci get firewall.wrt_luci_wan.enabled)"
+assert_eq "luci_wan_sync: изменение закоммичено" "firewall" "$(cat "$LT/commits")"
+if luci_wan_sync; then die "luci_wan_sync: повтор без изменений → 1"; else pass "luci_wan_sync: повтор без изменений → 1"; fi
+printf 'root:$6$salt$hash:20000:0:99999:7:::\n' > "$WRT_SHADOW"
+if root_password_empty; then die "root_password_empty: хеш → не пуст"; else pass "root_password_empty: хеш → не пуст"; fi
+if luci_wan_sync; then pass "luci_wan_sync: пароль задан → правило меняется"; else die "luci_wan_sync: пароль задан → правило меняется"; fi
+assert_eq "luci_wan_sync: пароль задан → LuCI с WAN включена" "1" "$(uci get firewall.wrt_luci_wan.enabled)"
+# Само правило в init-скрипте — только именованное: безусловное fw_allow_wan
+# для LuCI вернуло бы дыру мимо luci_wan_sync.
+if grep -q 'fw_allow_wan Allow-LuCI' "$WRT" || ! grep -q 'uci set firewall.wrt_luci_wan=rule' "$WRT"; then
+	die "wrt.cloudinit: LuCI с WAN — только через правило wrt_luci_wan"
+else
+	pass "wrt.cloudinit: LuCI с WAN — только через правило wrt_luci_wan"
+fi
+
+# --- wrt.cloudinit: хеш пользователя из `users:` доходит до root ---
+# `parse_users | while` в ash — подоболочка: CI_ADMIN_HASH терялся, и при
+# сиде без chpasswd root оставался с пустым паролем. Функции init-скрипта
+# подгружаются в подоболочке; всё, что трогает систему, подменено.
+UDD="$LT/seed"; mkdir -p "$UDD"
+grep -v '^hostname:' "$BSW/user-data" | \
+	awk '/^chpasswd:/ { skip = 1; next } skip && /^[^ ]/ { skip = 0 } !skip' > "$UDD/user-data"
+got=$(
+	# shellcheck disable=SC1090
+	. "$WRT"
+	CIDATA=$UDD
+	logger() { :; }
+	create_ci_admin() { [ -n "$CI_ADMIN_HASH" ] || CI_ADMIN_HASH=$2; }
+	install_ssh_keys() { :; }
+	install_key_lines() { :; }
+	set_root_password() { :; }
+	stage_runcmd() { :; }
+	apply_user_data
+	printf '%s' "$CI_ADMIN_HASH"
+)
+case "$got" in
+	\$6\$*) pass "apply_user_data: хеш из users: виден ensure_root_not_open" ;;
+	*)      die  "apply_user_data: хеш из users: потерян (подоболочка?)" ;;
+esac
+rm -rf "$LT"
+unset WRT_SHADOW
+
 [ "$fail" = 0 ] && { echo "ALL PASS"; exit 0; } || { echo "FAILURES"; exit 1; }

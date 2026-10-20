@@ -180,16 +180,26 @@ apply_user_data() {
 		# Список `users:` — стандартный cloud-config, его пишет `bs device write`.
 		# `create_ci_admin` готовый хеш пропускает как есть: `prepare_password_hash`
 		# отдаёт без изменений всё, что начинается с `$`.
-		parse_users "$ud" | while IFS='|' read -r name hash; do
+		#
+		# Цикл читает heredoc, а не конвейер: в ash `… | while` идёт в
+		# подоболочке, и CI_ADMIN_HASH из create_ci_admin терялся —
+		# ensure_root_not_open не видел пароля пользователя, и root без
+		# chpasswd оставался с пустым паролем.
+		local name hash
+		while IFS='|' read -r name hash; do
 			[ -n "$name" ] || continue
 			if [ -z "$hash" ]; then
 				logger -t "$PROG" "user '$name' requested but password missing"
 				continue
 			fi
-			create_ci_admin "$name" "$hash" || \
+			if create_ci_admin "$name" "$hash"; then
+				install_ssh_keys "$name" "$ud"
+			else
 				logger -t "$PROG" "failed to provision user $name"
-			install_ssh_keys "$name" "$ud"
-		done
+			fi
+		done <<EOF
+$(parse_users "$ud")
+EOF
 		install_key_lines root "$(parse_toplevel_ssh_keys "$ud")"
 	fi
 
@@ -260,6 +270,12 @@ install_ssh_keys() {
 install_key_lines() {
 	local user=$1 keys=$2 home dir dirs
 	[ -n "$keys" ] || return 0
+	# Имя из сида идёт в путь (/home/<имя>/.ssh): без проверки «../x»
+	# писало бы ключи мимо домашнего каталога.
+	if [ "$user" != root ] && ! validate_username "$user"; then
+		logger -t "$PROG" "ssh keys for invalid user '$user' ignored"
+		return 0
+	fi
 
 	if [ "$user" = root ]; then
 		dirs=/etc/dropbear
@@ -693,7 +709,16 @@ EOF
 	fw_allow_wan Allow-DHCP-Renew udp 68 ipv4
 	fw_allow_wan Allow-Ping icmp '' ipv4
 	fw_allow_wan Allow-SSH-from-WAN tcp 22
-	fw_allow_wan Allow-LuCI-from-WAN tcp '80 443'
+	# LuCI с WAN — именованное правило: пока пароль root пуст, оно выключено
+	# (lib/luci.sh), иначе rpcd пускал бы с WAN под root без пароля.
+	uci set firewall.wrt_luci_wan=rule
+	uci set firewall.wrt_luci_wan.name='Allow-LuCI-from-WAN'
+	uci set firewall.wrt_luci_wan.src='wan'
+	uci set firewall.wrt_luci_wan.proto='tcp'
+	uci set firewall.wrt_luci_wan.dest_port='80 443'
+	uci set firewall.wrt_luci_wan.target='ACCEPT'
+	luci_wan_sync && \
+		logger -t "$PROG" "root has no password: LuCI closed on WAN until it is set"
 
 	uci commit firewall
 
@@ -735,6 +760,7 @@ ensure_root_not_open() {
 		logger -t "$PROG" "root had empty password: set to the seed user's password"
 		return 0
 	fi
+	# LuCI с WAN закрывает правило wrt_luci_wan (luci_wan_sync в apply_network_config).
 	uci -q set dropbear.main.RootPasswordAuth='off'
 	uci -q commit dropbear
 	/etc/init.d/dropbear restart >/dev/null 2>&1 || true
@@ -753,6 +779,12 @@ start_service() {
 		mark_cloudinit_ready
 		return 1
 	}
+	# Каждую загрузку: пароль root мог появиться после провижна (задан из
+	# LAN) — тогда LuCI с WAN открывается; пропал — закрывается.
+	if luci_wan_sync; then
+		logger -t "$PROG" "LuCI on WAN: rule enabled=$(uci -q get firewall.wrt_luci_wan.enabled) by root password state"
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	fi
 
 	if ! mount_cidata; then
 		logger -t "$PROG" "trusted cidata not found — skip"

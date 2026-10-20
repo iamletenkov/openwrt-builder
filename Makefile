@@ -24,7 +24,8 @@ build:
 
 test:
 	docker run --rm -v "$(CURDIR):/src:ro" -w /src debian:12-slim sh -c \
-	  'apt-get update -qq >/dev/null && apt-get install -y -qq shellcheck dash gawk >/dev/null && dash tests/cloudinit/run-tests.sh'
+	  'apt-get update -qq >/dev/null && apt-get install -y -qq shellcheck dash busybox gawk >/dev/null && \
+	   dash tests/cloudinit/run-tests.sh && echo "── busybox ash ──" && busybox sh tests/cloudinit/run-tests.sh'
 
 # Только output/: files/ - пользовательский overlay, make его не трогает.
 clean:
