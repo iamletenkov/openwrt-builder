@@ -1,0 +1,20 @@
+version: 1
+config:
+  - type: physical
+    name: eth0
+    mac_address: 'BC:24:11:09:12:21'
+    subnets:
+      - type: static
+        address: '192.168.31.137'
+        netmask: '255.255.255.0'
+        gateway: '192.168.31.1'
+  - type: physical
+    name: eth1
+    mac_address: 'BC:24:11:B6:C3:EC'
+    subnets:
+      - type: static
+        address: '192.168.51.1'
+        netmask: '255.255.255.0'
+  - type: nameserver
+    address:
+      - '8.8.8.8'

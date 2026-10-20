@@ -1,16 +1,21 @@
-version: "3.9"
 services:
   builder:
     build: ./builder
+    # uid/gid хоста: файлы в output/ и cache/ не достаются root'у
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
-      - ./config:/work/config:ro                  # списки пакетов и фидов
-      - ./files:/work/files                       # overlay-файлы для rootfs
+      - ./config:/work/config:ro                  # списки пакетов, фиды, ключи
+      - ./overlay:/work/overlay:ro                # файлы образа из репозитория (cloud-init, ресайз)
+      - ./files:/work/files:ro                    # свой overlay (gitignored)
       - ./output:/work/output                     # собранные образы
+      - ./cache:/work/cache                       # распакованный ImageBuilder
     environment:
-      - OPENWRT_RELEASE=24.10.1
-      - TARGET=x86
-      - SUBTARGET=64
-      - PROFILE=generic
-      - ROOTFS_SIZE=512
-      #- JOBS=4
+      - OPENWRT_RELEASE=${OPENWRT_RELEASE:-25.12.6}
+      - TARGET=${TARGET:-x86}
+      - SUBTARGET=${SUBTARGET:-64}
+      - PROFILE=${PROFILE:-generic}
+      - ROOTFS_SIZE=${ROOTFS_SIZE:-1024}
+      - JOBS=${JOBS:-4}
+      - MIRROR=${MIRROR:-https://downloads.openwrt.org}
+      - HOME=/tmp
     command: ["/work/build-image.sh"]

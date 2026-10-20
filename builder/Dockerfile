@@ -1,19 +1,15 @@
-FROM debian:12-slim
+# trixie: e2fsprogs >= 1.47.1 умеет mke2fs -d <tar> (пересборка ext4 корня без root)
+FROM debian:13-slim
 
-# build‑time аргументы позволят кешировать скачивание SDK и ImageBuilder
-ARG OPENWRT_RELEASE
-ARG TARGET
-ARG SUBTARGET
-
+# Зависимости ImageBuilder OpenWrt 25.12 (apk-инструменты лежат внутри него;
+# distutils для его prereq-проверки даёт python3-setuptools), qemu-img для
+# qcow2, e2fsprogs (+libarchive для -d <tar>) и sfdisk для пересборки ext4 корня.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git make gawk python3 build-essential \
-    libncurses5-dev zlib1g-dev flex gettext libssl-dev \
-    xz-utils zstd file rsync jq patch parted wget unzip python3-distutils \
-    qemu-utils && \
+    ca-certificates curl wget make gawk patch python3 python3-setuptools perl \
+    file rsync unzip xz-utils zstd gzip bzip2 qemu-utils e2fsprogs libarchive13t64 fdisk && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
 
-# копируем скрипт
 COPY build-image.sh /work/build-image.sh
 RUN chmod +x /work/build-image.sh

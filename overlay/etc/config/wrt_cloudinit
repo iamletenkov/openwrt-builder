@@ -1,0 +1,4 @@
+config wrt_cloudinit 'main'
+	# 1 — разрешить повторный провижн (новый instance-id) с сида на съёмном
+	# носителе (SD/MMC, USB) после первого успешного. По умолчанию запрещено.
+	option allow_removable_reprovision '0'

@@ -1,227 +1,256 @@
 #!/usr/bin/env bash
+# Сборка образа OpenWrt 25.12+ (apk) через ImageBuilder.
+#
+# Поддерживаются только релизы с apk (25.12 и новее): ImageBuilder 24.10 и
+# старше (opkg, repositories.conf) отвергается сразу, а не ломается посреди
+# сборки. Таргеты: x86/64, armsr/armv8, bcm27xx/bcm2711 (RPi 4),
+# bcm27xx/bcm2712 (RPi 5).
 set -euo pipefail
 
-# ----‑ Переменные, которые можно переопределить из compose ----
-OPENWRT_RELEASE=${OPENWRT_RELEASE:-24.10.1}
+# ---- Параметры (env) ----
+OPENWRT_RELEASE=${OPENWRT_RELEASE:-25.12.6}
 TARGET=${TARGET:-x86}
 SUBTARGET=${SUBTARGET:-64}
 PROFILE=${PROFILE:-generic}
-ROOTFS_SIZE=${ROOTFS_SIZE:-512}
-JOBS=${JOBS:-$(nproc)}
+ROOTFS_SIZE=${ROOTFS_SIZE:-1024}
+# По умолчанию не больше 4 потоков: сборщик часто живёт на общем хосте.
+JOBS=${JOBS:-$(( $(nproc) < 4 ? $(nproc) : 4 ))}
+# Базовый URL релизов. По умолчанию HTTPS; подписи apk проверяются всегда.
+MIRROR=${MIRROR:-https://downloads.openwrt.org}
+ARCHIVE_MIRROR=${ARCHIVE_MIRROR:-https://archive.openwrt.org}
 
-IB_DIR="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TARGET}-${SUBTARGET}.Linux-x86_64"
-
-CONFIG_DIR=${CONFIG_DIR:-/work/config}
+WORK_DIR=${WORK_DIR:-/work}
+CONFIG_DIR=${CONFIG_DIR:-${WORK_DIR}/config}
 PACKAGES_FILE=${PACKAGES_FILE:-${CONFIG_DIR}/packages.txt}
 FEEDS_FILE=${FEEDS_FILE:-${CONFIG_DIR}/feeds.txt}
-FILES_DIR=${FILES_DIR:-/work/files}
-GROWPART_URL=${GROWPART_URL:-https://raw.githubusercontent.com/canonical/cloud-utils/main/bin/growpart}
+LOCAL_PKG_FILE=${LOCAL_PKG_FILE:-${CONFIG_DIR}/local-packages.txt}
+KEYS_DIR=${KEYS_DIR:-${CONFIG_DIR}/keys}
+OVERLAY_DIR=${OVERLAY_DIR:-${WORK_DIR}/overlay}   # файлы образа из репозитория
+FILES_DIR=${FILES_DIR:-${WORK_DIR}/files}         # пользовательский overlay (gitignored)
+OUTPUT_ROOT=${OUTPUT_ROOT:-${WORK_DIR}/output}
+CACHE_DIR=${CACHE_DIR:-${WORK_DIR}/cache}
 
-if [[ ! -f "$PACKAGES_FILE" ]]; then
-  echo "→ packages file not found: $PACKAGES_FILE" >&2
+# Значения идут в URL и пути (cache/, output/): только ожидаемый алфавит —
+# workflow_dispatch передаёт их из полей формы как есть.
+[[ "$OPENWRT_RELEASE" =~ ^[0-9]{2}\.[0-9]{1,2}\.[0-9]+(-rc[0-9]+)?$ ]] || {
+  echo "→ OPENWRT_RELEASE='$OPENWRT_RELEASE' не похож на номер релиза" >&2; exit 1; }
+for v in TARGET SUBTARGET PROFILE; do
+  [[ "${!v}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "→ $v='${!v}': допустимы a-z, 0-9, _ и -" >&2; exit 1; }
+done
+[[ "$ROOTFS_SIZE" =~ ^[0-9]+$ && "$JOBS" =~ ^[0-9]+$ ]] || { echo "→ ROOTFS_SIZE и JOBS — числа" >&2; exit 1; }
+major=${OPENWRT_RELEASE%%.*}
+rest=${OPENWRT_RELEASE#*.}; minor=${rest%%[!0-9]*}
+if (( 10#$major < 25 || (10#$major == 25 && 10#$minor < 12) )); then
+  echo "→ поддерживается только OpenWrt 25.12+ (apk); образы 24.10 — в релизе v0.1.0" >&2
   exit 1
 fi
 
-if [[ ! -f "$FEEDS_FILE" ]]; then
-  echo "→ feeds file not found: $FEEDS_FILE" >&2
+TS="${TARGET}-${SUBTARGET}"
+IB_NAME="openwrt-imagebuilder-${OPENWRT_RELEASE}-${TS}.Linux-x86_64"
+IB_TAR="${IB_NAME}.tar.zst"
+REL_PATH="releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}"
+OUT_DIR="${OUTPUT_ROOT}/${OPENWRT_RELEASE}/${TS}"
+
+for f in "$PACKAGES_FILE" "$FEEDS_FILE"; do
+  [[ -f "$f" ]] || { echo "→ нет файла: $f" >&2; exit 1; }
+done
+
+# список без комментариев и пустых строк, с обрезкой пробелов
+read_list() {
+  [[ -f "$1" ]] || return 0
+  sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true
+}
+
+fetch() { # url dest
+  curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 -o "$2" "$1"
+}
+
+# ---------- 1. ImageBuilder: скачать и проверить sha256 ----------
+mkdir -p "$CACHE_DIR"
+if [[ ! -d "$CACHE_DIR/$IB_NAME" ]]; then
+  sums="$CACHE_DIR/sha256sums-${OPENWRT_RELEASE}-${TS}"
+  base=""
+  for m in "$MIRROR" "$ARCHIVE_MIRROR"; do
+    if fetch "${m%/}/$REL_PATH/sha256sums" "$sums"; then base="${m%/}"; break; fi
+  done
+  [[ -n "$base" ]] || { echo "→ релиз $OPENWRT_RELEASE для $TS не найден ни на одном зеркале" >&2; exit 1; }
+  echo "→ ImageBuilder: $base/$REL_PATH/$IB_TAR"
+  fetch "$base/$REL_PATH/$IB_TAR" "$CACHE_DIR/$IB_TAR"
+  want=$(awk -v f="*$IB_TAR" '$2==f{print $1}' "$sums")
+  [[ -n "$want" ]] || { echo "→ $IB_TAR нет в sha256sums" >&2; exit 1; }
+  echo "$want  $CACHE_DIR/$IB_TAR" | sha256sum -c --quiet - || { echo "→ sha256 ImageBuilder не совпал" >&2; exit 1; }
+  tar -C "$CACHE_DIR" -I zstd -xf "$CACHE_DIR/$IB_TAR"
+  rm -f "$CACHE_DIR/$IB_TAR"
+fi
+IB_DIR="$CACHE_DIR/$IB_NAME"
+
+if [[ ! -f "$IB_DIR/repositories" ]]; then
+  echo "→ в ImageBuilder нет файла repositories (apk) — это не 25.12+?" >&2
   exit 1
 fi
 
-mkdir -p "$FILES_DIR/usr/sbin"
-echo "→ Installing growpart helper into overlay…"
-wget -q -O "$FILES_DIR/usr/sbin/growpart" "$GROWPART_URL"
-chmod +x "$FILES_DIR/usr/sbin/growpart"
-
-# ---------- 1. Скачиваем ImageBuilder ----------
-if [[ ! -d "$IB_DIR" ]]; then
-  url="https://archive.openwrt.org/releases/${OPENWRT_RELEASE}/targets/${TARGET}/${SUBTARGET}/${IB_DIR}.tar.zst"
-  echo "→ Fetching ImageBuilder… [${url}]"
-  for i in {1..3}; do
-    curl -Lf \
-      $url \
-      -o /tmp/ib.tar.zst && break || {
-        echo "ImageBuilder download failed ($i). Retrying in 30 s…"
-        sleep 30
-      }
-  done
-  tar -I unzstd -xf /tmp/ib.tar.zst
+# ---------- 2. Репозитории: зеркало и пользовательские фиды ----------
+# Эталон — копия, снятая при первой распаковке: повторный запуск не копит строки.
+[[ -f "$IB_DIR/repositories.orig" ]] || cp "$IB_DIR/repositories" "$IB_DIR/repositories.orig"
+cp "$IB_DIR/repositories.orig" "$IB_DIR/repositories"
+if [[ "${MIRROR%/}" != "https://downloads.openwrt.org" ]]; then
+  sed -i "s#https://downloads.openwrt.org#${MIRROR%/}#g" "$IB_DIR/repositories"
 fi
+while IFS= read -r feed; do
+  case "$feed" in
+    http://*/packages.adb|https://*/packages.adb|file://*/packages.adb)
+      echo "$feed" >> "$IB_DIR/repositories"
+      echo "   • фид: $feed" ;;
+    *) echo "→ $(basename "$FEEDS_FILE"): нужен URL на packages.adb, а не '$feed'" >&2; exit 1 ;;
+  esac
+done < <(read_list "$FEEDS_FILE")
 
-# ---------- 2. Подменяем репозитории на зеркало  ----------
-# По-умолчанию берём пакеты с официального CDN OpenWrt.
-# При необходимости можно переопределить переменной окружения
-#   MIRROR=http://<ваше-зеркало>/openwrt
-MIRROR=${MIRROR:-http://downloads.openwrt.org}
- 
- # заменяем все вхождения downloads.openwrt.org →
- #   ${MIRROR}
- sed -i "s#https://downloads.openwrt.org#${MIRROR}#g" \
-        "$IB_DIR/repositories.conf"
-
-# ---------- 3. Подмешиваем пользовательские фиды ----------
-feeds_added=0
-mapfile -t CUSTOM_FEEDS < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$FEEDS_FILE" || true)
-if (( ${#CUSTOM_FEEDS[@]} )); then
-  echo "→ Adding custom feeds from $FEEDS_FILE"
-  for feed in "${CUSTOM_FEEDS[@]}"; do
-    feed_trimmed="$feed"
-    feed_trimmed="${feed_trimmed#"${feed_trimmed%%[![:space:]]*}"}"
-    feed_trimmed="${feed_trimmed%"${feed_trimmed##*[![:space:]]}"}"
-    [[ -z "$feed_trimmed" ]] && continue
-
-    feed_type=${feed_trimmed%%[[:space:]]*}
-    case "$feed_type" in
-      src-git|src_git)
-        echo "   ! skipping unsupported git feed (provide binary feed URL instead): $feed_trimmed"
-        continue
-        ;;
-      src|src/gz|src-gz)
-        feeds_added=1
-        if grep -Fxq "$feed_trimmed" "$IB_DIR/repositories.conf"; then
-          echo "   • already present: $feed_trimmed"
-        else
-          echo "$feed_trimmed" >> "$IB_DIR/repositories.conf"
-          echo "   • added: $feed_trimmed"
-        fi
-        ;;
-      *)
-        echo "   ! ignoring unknown feed directive '$feed_type': $feed_trimmed"
-        ;;
-    esac
-  done
-else
-  echo "→ No custom feeds to add."
-fi
-
-# ---------- 3a. Локальные .ipk (AmneziaWG, podkop и т.п.) ----------
-# Пакеты, которых нет в фидах (или kmod-* собранные под конкретное ядро), кладём в
-# локальный фид ImageBuilder'а: качаем .ipk по ссылкам из local-ipk.txt, строим
-# индекс (Packages.gz) и подключаем как "src/gz file://…" ПЕРВОЙ строкой
-# repositories.conf (приоритет над сетевыми фидами). Подпись снимается в 3b.
-LOCAL_IPK_FILE=${LOCAL_IPK_FILE:-${CONFIG_DIR}/local-ipk.txt}
-LOCAL_IPK_URLS=()
-if [[ -f "$LOCAL_IPK_FILE" ]]; then
-  mapfile -t LOCAL_IPK_URLS < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$LOCAL_IPK_FILE" || true)
-fi
-if (( ${#LOCAL_IPK_URLS[@]} )); then
-  IB_ABS="$(cd "$IB_DIR" && pwd)"
-  IPKG_INDEX="$IB_ABS/scripts/ipkg-make-index.sh"
-  if [[ ! -x "$IPKG_INDEX" ]]; then
-    echo "→ ipkg-make-index.sh не найден в ImageBuilder ($IPKG_INDEX)" >&2
-    exit 1
-  fi
-  LOCAL_PKG_DIR="$IB_ABS/localpkgs"
-  mkdir -p "$LOCAL_PKG_DIR"
-  echo "→ Fetching local .ipk from $LOCAL_IPK_FILE"
-  for url in "${LOCAL_IPK_URLS[@]}"; do
-    url="${url#"${url%%[![:space:]]*}"}"; url="${url%"${url##*[![:space:]]}"}"
-    [[ -z "$url" ]] && continue
-    echo "   • $url"
-    wget -q -P "$LOCAL_PKG_DIR" "$url" || { echo "   ! download failed: $url" >&2; exit 1; }
-  done
-  echo "→ Building local package index (Packages.gz)"
-  # ipkg-make-index.sh зовёт "$MKHASH sha256|md5 <file>"; вне make-окружения mkhash
-  # нет в PATH (MKHASH пустой → голое "sha256: command not found"). Подсовываем шим
-  # поверх coreutils — вывод идентичен mkhash (только hex-хэш).
-  MKHASH_SHIM="$LOCAL_PKG_DIR/.mkhash"
-  cat > "$MKHASH_SHIM" <<'SH'
-#!/bin/sh
-algo=$1; shift
-case "$algo" in
-  md5)    md5sum "$@" | awk '{print $1}' ;;
-  sha256) sha256sum "$@" | awk '{print $1}' ;;
-  *) echo "mkhash-shim: unknown algo '$algo'" >&2; exit 1 ;;
-esac
-SH
-  chmod +x "$MKHASH_SHIM"
-  ( cd "$LOCAL_PKG_DIR" && MKHASH="$MKHASH_SHIM" "$IPKG_INDEX" . > Packages )
-  gzip -kf "$LOCAL_PKG_DIR/Packages"
-  local_feed="src/gz localpkgs file://$LOCAL_PKG_DIR"
-  grep -Fxq "$local_feed" "$IB_DIR/repositories.conf" \
-    || sed -i "1i $local_feed" "$IB_DIR/repositories.conf"
-  feeds_added=1
-  echo "   • local feed: $local_feed ($(ls "$LOCAL_PKG_DIR"/*.ipk | wc -l) .ipk)"
-fi
-
-# ---------- 3b. Подпись репозиториев для сторонних фидов ----------
-# Сторонние фиды (openwrt.ai и т.п.) подписаны своим usign-ключом, которого нет
-# в keys/ ImageBuilder'а → opkg отверг бы их по подписи. Импорт чужого ключа в
-# офлайн-сборку хрупок (ротация ключей, наличие usign в контейнере), поэтому при
-# наличии кастомных фидов отключаем проверку подписи репозиториев НА ВРЕМЯ СБОРКИ.
-# ImageBuilder и фиды тянутся по HTTPS, сборка идёт в контролируемом окружении.
-# Чтобы доверять только конкретному ключу — положи его usign-pub в "$IB_DIR/keys/"
-# (имя файла = fingerprint) и убери этот блок.
-if (( feeds_added )); then
-  echo "→ Custom feeds present → disabling opkg signature check for this build"
-  sed -i 's/^\([[:space:]]*\)option check_signature/\1# option check_signature/' \
-         "$IB_DIR/repositories.conf"
-  # Подстраховка: если строки option check_signature в конфиге нет вовсе —
-  # явно выключим проверку, чтобы opkg не отверг неподписанный сторонний фид.
-  if ! grep -qE '^[[:space:]]*#?[[:space:]]*option check_signature' "$IB_DIR/repositories.conf"; then
-    echo "option check_signature 0" >> "$IB_DIR/repositories.conf"
-  fi
-fi
-
-echo "──────── repositories.conf (итоговый) ────────"
-cat "$IB_DIR/repositories.conf"
-echo "──────────────────────────────────────────────"
-
-# ---------- 4. Готовим список пакетов ----------
-mapfile -t PKG_ARRAY < <(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$PACKAGES_FILE" | sort -u)
-PKG_ARRAY=("${PKG_ARRAY[@]/ip-tiny}")
-
-PKGS="${PKG_ARRAY[*]}"
-echo "→ Packages: $PKGS"
-
-# ---------- 5. Сборка образов ----------
-pushd "$IB_DIR" >/dev/null
-  make -j"$JOBS" image V=s \
-       PROFILE="$PROFILE" \
-       PACKAGES="$PKGS" \
-       ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
-       EXTRA_IMAGE_NAME="custom" \
-       FILES="$FILES_DIR" \
-       BIN_DIR=/work/output 
-popd >/dev/null
-
-# ---------- 6. Конвертируем образы в qcow2 ----------
+# Ключи сторонних фидов (*.pem, apk v3). Проверка подписей не отключается:
+# фид без ключа в config/keys/ уронит сборку — так и задумано.
 shopt -s nullglob
-img_gz_list=(/work/output/*.img.gz)
-img_raw_list=(/work/output/*.img)
+for k in "$KEYS_DIR"/*.pem; do
+  cp "$k" "$IB_DIR/keys/"
+  echo "   • ключ: $(basename "$k")"
+done
 shopt -u nullglob
 
-if (( ${#img_gz_list[@]} + ${#img_raw_list[@]} > 0 )); then
-  echo "→ Converting raw images to qcow2…"
+# ---------- 3. Локальные .apk (по URL) ----------
+# Кладутся в packages/ ImageBuilder'а: он сам строит индекс и подписывает его
+# локальным ключом сборки (публичная часть попадает в образ, /etc/apk/keys).
+# Строка: <url> [sha256].
+while read -r url sum _; do
+  name=$(basename "$url")
+  [[ "$name" == *.apk ]] || { echo "→ local-packages: ожидается .apk: $url" >&2; exit 1; }
+  echo "   • локальный пакет: $name"
+  fetch "$url" "$IB_DIR/packages/$name"
+  if [[ -n "${sum:-}" ]]; then
+    echo "$sum  $IB_DIR/packages/$name" | sha256sum -c --quiet - || { echo "→ sha256 не совпал: $name" >&2; exit 1; }
+  fi
+done < <(read_list "$LOCAL_PKG_FILE")
 
-  for img_gz in "${img_gz_list[@]}"; do
+echo "──────── repositories ────────"
+cat "$IB_DIR/repositories"
+echo "──────────────────────────────"
+
+# ---------- 4. Список пакетов ----------
+# Общий список + необязательный config/packages-<target>-<subtarget>.txt.
+PKGS=$( { read_list "$PACKAGES_FILE"; read_list "${CONFIG_DIR}/packages-${TS}.txt"; } \
+        | awk '!seen[$0]++' | tr '\n' ' ')
+echo "→ Пакеты: $PKGS"
+
+# ---------- 5. Overlay: файлы репозитория + пользовательские ----------
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+if [[ -d "$OVERLAY_DIR" ]]; then cp -a "$OVERLAY_DIR/." "$STAGE/"; fi
+if [[ -d "$FILES_DIR" ]]; then cp -a "$FILES_DIR/." "$STAGE/"; fi
+# Права на исполнение не зависят от umask/checkout хоста.
+chmod 0755 "$STAGE"/etc/uci-defaults/* "$STAGE"/etc/init.d/* 2>/dev/null || true
+
+# ---------- 6. Сборка ----------
+# rootfs.tar.gz нужен шагу 7 (пересборка ext4); у bcm27xx он по умолчанию выключен.
+sed -i 's/^# CONFIG_TARGET_ROOTFS_TARGZ is not set$/CONFIG_TARGET_ROOTFS_TARGZ=y/' "$IB_DIR/.config"
+mkdir -p "$OUT_DIR"
+make -C "$IB_DIR" -j"$JOBS" image \
+     PROFILE="$PROFILE" \
+     PACKAGES="$PKGS" \
+     ROOTFS_PARTSIZE="$ROOTFS_SIZE" \
+     EXTRA_IMAGE_NAME="custom" \
+     FILES="$STAGE" \
+     BIN_DIR="$OUT_DIR"
+
+# ---------- 7. Пересборка ext4 корня через mke2fs ----------
+# make_ext4fs, которым ImageBuilder делает ext4, оставляет ФС, которую ядро
+# не умеет расширять онлайн: resize2fs на смонтированном корне растит её на
+# одну группу и падает с EINVAL (ext4_group_extend: can't shrink FS). Отсюда
+# в прежнем 80-rootfs-resize офлайн-resize2fs через loop поверх
+# смонтированного корня — опасный обход. Здесь корень пересобирается
+# mke2fs -d из того же rootfs.tar (flex_bg, 64bit, корректный resize_inode),
+# с тем же UUID и меткой, и вписывается в образ на место раздела 2.
+# Метаданные fwtool в хвосте .img.gz при этом теряются: sysupgrade такого
+# образа потребует -F (обновление ОС вне рамок, образ — для первой установки).
+ROOTFS_TAR=""
+shopt -s nullglob
+for f in "$OUT_DIR"/*-rootfs.tar.gz; do ROOTFS_TAR=$f; break; done
+shopt -u nullglob
+rebuild_ext4() { # <raw-образ ФС или диска> <смещение байт> <размер байт>
+  local img=$1 off=$2 size=$3 part uuid
+  part=$(mktemp "$CACHE_DIR/part.XXXXXX")
+  dd if="$img" of="$part" bs=1M iflag=skip_bytes,count_bytes skip="$off" count="$size" status=none
+  if [[ "$(blkid -p -s LABEL -o value "$part" 2>/dev/null)" != rootfs ]] || \
+     [[ "$(blkid -p -s TYPE -o value "$part" 2>/dev/null)" != ext4 ]]; then
+    rm -f "$part"; return 1
+  fi
+  uuid=$(blkid -p -s UUID -o value "$part")
+  rm -f "$part"
+  truncate -s "$size" "$part"
+  # Функция зовётся в условии (set -e там не действует): ошибки — явно и фатально.
+  mke2fs -q -F -t ext4 -L rootfs -U "$uuid" -m 0 -E root_owner=0:0 -d "$ROOTFS_RAW" "$part" \
+    || { echo "→ mke2fs не собрал корень для $(basename "$img")" >&2; exit 1; }
+  dd if="$part" of="$img" bs=1M oflag=seek_bytes seek="$off" conv=notrunc status=none \
+    || { echo "→ dd не вписал корень в $(basename "$img")" >&2; exit 1; }
+  rm -f "$part"
+}
+shopt -s nullglob
+if [[ -n "$ROOTFS_TAR" ]]; then
+  ROOTFS_RAW="$CACHE_DIR/rootfs.tar"
+  gzip -dc "$ROOTFS_TAR" > "$ROOTFS_RAW"
+  for img_gz in "$OUT_DIR"/*-ext4-*.img.gz; do
     raw="${img_gz%.gz}"
-    qcow2="${raw%.img}.qcow2"
-    echo "   • $(basename "$img_gz") → $(basename "$qcow2")"
-    if [[ ! -f "$raw" ]]; then
-      set +e
-      gzip -dk "$img_gz"
-      status=$?
-      set -e
-      if (( status != 0 && status != 2 )); then
-        echo "   ! gzip failed for $(basename "$img_gz") (exit $status)" >&2
-        exit $status
+    rc=0; gzip -dc "$img_gz" > "$raw" || rc=$?
+    (( rc == 0 || rc == 2 )) || { echo "→ gzip: код $rc на $(basename "$img_gz")" >&2; exit "$rc"; }
+    done_ok=0
+    if [[ "$img_gz" == *-ext4-rootfs.img.gz ]]; then
+      rebuild_ext4 "$raw" 0 "$(stat -c %s "$raw")" && done_ok=1
+    else
+      # раздел 2 — корень у x86, armsr и bcm27xx
+      read -r start sectors < <(sfdisk -d "$raw" 2>/dev/null | \
+        awk -F'[ ,=]+' '/^[^ ]+2 :/ { for (i = 1; i < NF; i++) { if ($i == "start") s = $(i + 1); if ($i == "size") z = $(i + 1) } print s, z }')
+      if [[ -n "${start:-}" ]]; then
+        rebuild_ext4 "$raw" $((start * 512)) $((sectors * 512)) && done_ok=1
       fi
     fi
-    qemu-img convert -f raw -O qcow2 "$raw" "$qcow2"
+    if (( done_ok )); then
+      gzip -9n -c "$raw" > "$img_gz"
+      echo "   • ext4 пересобран: $(basename "$img_gz")"
+    else
+      echo "   ! ext4 не найден в $(basename "$img_gz"), оставлен как есть"
+    fi
     rm -f "$raw"
   done
-
-  # Вдобавок обрабатываем возможные неархивированные .img, которые выдал ImageBuilder
-  for img_raw in "${img_raw_list[@]}"; do
-    # если файл уже удалён (например, после обработки .img.gz) — пропускаем
-    [[ -f "$img_raw" ]] || continue
-    qcow2="${img_raw%.img}.qcow2"
-    echo "   • $(basename "$img_raw") → $(basename "$qcow2")"
-    qemu-img convert -f raw -O qcow2 "$img_raw" "$qcow2"
-  done
+  rm -f "$ROOTFS_RAW"
 else
-  echo "→ Skipping qcow2 conversion: no .img artifacts found."
+  echo "   ! нет rootfs.tar.gz — ext4 не пересобран (онлайн-ресайз корня не сработает)" >&2
+fi
+shopt -u nullglob
+
+# ---------- 8. qcow2 для ВМ (x86, armsr) ----------
+prefix="openwrt-${OPENWRT_RELEASE}-custom-${TS}"
+shopt -s nullglob
+case "$TARGET" in
+  x86|armsr)
+    for img_gz in "$OUT_DIR"/*-combined*.img.gz; do
+      raw="${img_gz%.gz}"
+      echo "   • $(basename "$img_gz") → qcow2"
+      # gzip выходит кодом 2 на «trailing garbage» (метаданные подписи) — это норма
+      rc=0; gzip -dc "$img_gz" > "$raw" || rc=$?
+      (( rc == 0 || rc == 2 )) || { echo "→ gzip: код $rc на $(basename "$img_gz")" >&2; exit "$rc"; }
+      qemu-img convert -f raw -O qcow2 "$raw" "${raw%.img}.qcow2"
+      rm -f "$raw"
+    done ;;
+esac
+# Общие имена (sha256sums, profiles.json) уникализируем: в одном релизе GitHub
+# лежат артефакты всех таргетов.
+if [[ -f "$OUT_DIR/profiles.json" ]]; then mv "$OUT_DIR/profiles.json" "$OUT_DIR/${prefix}.profiles.json"; fi
+rm -f "$OUT_DIR/sha256sums"
+arts=()
+for f in "$OUT_DIR"/*.img.gz "$OUT_DIR"/*.qcow2 "$OUT_DIR"/*.manifest "$OUT_DIR"/*.bin "$OUT_DIR"/*.tar.gz; do
+  arts+=("$(basename "$f")")
+done
+shopt -u nullglob
+if (( ${#arts[@]} )); then
+  ( cd "$OUT_DIR" && sha256sum -- "${arts[@]}" > "${prefix}.sha256sums" )
 fi
 
-echo -e "
-✔ Build finished. Check ./output for images."
+echo
+echo "✔ Готово: $OUT_DIR"
+ls -l "$OUT_DIR"

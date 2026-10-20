@@ -1,0 +1,28 @@
+#cloud-config
+hostname: wrt-1
+manage_etc_hosts: true
+users:
+- name: ops
+  hashed_passwd: $6$rounds=656000$IXMIczy/5UkYm6iH$I5.GlY4e7QbpgxaaE30MpurMAG3S/zZsHBhi17NbDyXsKx8xTzmhHBI2DvJLUDf7Q6m38BLSmvIE08SXSsDEb1
+  groups: sudo
+  shell: /bin/bash
+  lock_passwd: false
+  sudo: ALL=(ALL) NOPASSWD:ALL
+  ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3Nz probe@host
+  - ssh-rsa AAAAB3Nza second@host
+chpasswd:
+  list:
+  - root:$6$rounds=656000$8shBt.yqJBlB6Jsi$A9pGOZBqZSRvFmE5ehTnxusrSty3kKiQSB/7wPruvTocj5ekfQThRAszAgcWQUwGQy/8mQPc5DASDUozXJz4B.
+  expire: false
+ssh_pwauth: true
+package_update: false
+package_upgrade: false
+runcmd:
+- uci set system.@system[0].notes='provisioned by bisquite'
+- /etc/init.d/uhttpd restart
+growpart:
+  mode: auto
+  devices:
+  - /
+resize_rootfs: true

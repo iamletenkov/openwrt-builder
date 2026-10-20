@@ -1,0 +1,90 @@
+#!/bin/sh
+# Расширить корневую ФАЙЛОВУЮ СИСТЕМУ на весь раздел — онлайн, без
+# перезагрузки и без обходов.
+#
+# ext4-combined: корень смонтирован напрямую, растёт `resize2fs <раздел>`
+# (онлайн-ресайз ядра). Прежний путь — `losetup` поверх смонтированного корня и
+# офлайн-`resize2fs` по loop — менял ФС в обход ядра, державшего её
+# смонтированной на запись: ядро затем писало свой старый суперблок поверх
+# нового. Это прямой путь к порче корня, поэтому его здесь нет. Онлайн-рост
+# работает потому, что build-image.sh пересобирает корень mke2fs: ФС от
+# make_ext4fs ядро растит лишь на одну группу и падает с EINVAL.
+#
+# squashfs + overlay ext4: `losetup -c` (перечитать ёмкость loop) и онлайн
+# `resize2fs`. Overlay на f2fs (ImageBuilder выбирает его для больших
+# разделов) онлайн не растёт — записываем в журнал и выходим.
+#
+# Ждёт 70-rootpt-resize (маркер /etc/rootpt-resize) и не работает, если тот
+# ушёл в перезагрузку. Готово → код 0 (скрипт удаляется).
+# Отключить: создать /etc/rootfs-resize заранее.
+
+TAG=rootfs-resize
+# uci-defaults идут в boot (S10) раньше logd (S12): сообщения logger там
+# теряются. Пишем в кольцо ядра — их видят и dmesg, и logread.
+log() { echo "<5>$TAG: $*" > /dev/kmsg 2>/dev/null || logger -t "$TAG" "$*"; }
+[ -e /etc/rootfs-resize ] && exit 0
+[ -e /etc/rootpt-resize ] || exit 1
+[ -e /tmp/.root-resize-reboot ] && exit 1
+lock -n /var/lock/root-resize || exit 1
+
+finish() {
+	touch /etc/rootfs-resize
+	lock -u /var/lock/root-resize
+	exit 0
+}
+
+if ! command -v resize2fs >/dev/null 2>&1; then
+	log "resize2fs not installed, skip"
+	finish
+fi
+
+# mount_line <точка монтирования> → «maj:min fstype source»
+mount_line() {
+	awk -v mp="$1" '$5 == mp { for (i = 7; i <= NF && $i != "-"; i++) ; print $3, $(i + 1), $(i + 2); exit }' \
+		/proc/self/mountinfo
+}
+
+# fill_pct <точка монтирования> <размер раздела, сектора> → заполнение в %
+fill_pct() {
+	df -k "$1" 2>/dev/null | awk -v sec="$2" 'NR == 2 && sec > 0 { printf "%d\n", $2 * 2 * 100 / sec }'
+}
+
+set -- $(mount_line /overlay)
+if [ -n "$1" ]; then
+	# squashfs + overlay
+	OV_FS=$2
+	OV_DEV=$3
+	ROM_MM=$(mount_line /rom | cut -d' ' -f1)
+	PART_SECT=$(cat "$(readlink -f "/sys/dev/block/$ROM_MM")/size" 2>/dev/null)
+	case "$OV_FS" in
+		ext4)
+			losetup -c "$OV_DEV" >/dev/null 2>&1
+			resize2fs "$OV_DEV" >/dev/null 2>&1
+			log "overlay $OV_DEV grown live, $(fill_pct /overlay "$PART_SECT")% of partition"
+			;;
+		*)
+			log "overlay is $OV_FS, online grow not supported, skip"
+			;;
+	esac
+	finish
+fi
+
+set -- $(mount_line /)
+if [ "$2" != ext4 ]; then
+	log "root fs is ${2:-unknown}, skip"
+	finish
+fi
+ROOT_SYS=$(readlink -f "/sys/dev/block/$1")
+ROOT_DEV="/dev/${ROOT_SYS##*/}"
+PART_SECT=$(cat "$ROOT_SYS/size")
+if [ ! -b "$ROOT_DEV" ]; then
+	log "no device node $ROOT_DEV, skip"
+	finish
+fi
+
+if resize2fs "$ROOT_DEV" >/tmp/rootfs-resize.log 2>&1; then
+	log "root $ROOT_DEV grown online, $(fill_pct / "$PART_SECT")% of partition"
+else
+	log "online resize2fs failed: $(tail -n 1 /tmp/rootfs-resize.log)"
+fi
+finish

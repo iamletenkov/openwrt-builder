@@ -1,0 +1,91 @@
+#!/bin/sh
+# Расширить корневой РАЗДЕЛ до конца диска (или до начала следующего раздела,
+# например cidata, который `bs device write` кладёт в конец носителя).
+#
+# Основной путь — без перезагрузки: `parted resizepart` + `partx -u` сообщают
+# ядру новый размер через BLKPG. Перезагрузка — только откат, если таблица
+# изменилась, а ядро новый размер не увидело; тогда ставится флаг
+# /tmp/.root-resize-reboot, и 80-rootfs-resize и wrt.cloudinit ничего не
+# начинают в уходящей системе.
+#
+# Готово → код 0 (OpenWrt удаляет скрипт). Ждём перезагрузки → код 1.
+# Отключить: создать /etc/rootpt-resize заранее.
+
+TAG=rootpt-resize
+# uci-defaults идут в boot (S10) раньше logd (S12): сообщения logger там
+# теряются. Пишем в кольцо ядра — их видят и dmesg, и logread.
+log() { echo "<5>$TAG: $*" > /dev/kmsg 2>/dev/null || logger -t "$TAG" "$*"; }
+[ -e /etc/rootpt-resize ] && exit 0
+
+done_pt() {
+	touch /etc/rootpt-resize
+	lock -u /var/lock/root-resize
+	exit 0
+}
+
+lock -n /var/lock/root-resize || exit 1
+
+if ! command -v parted >/dev/null 2>&1 || ! command -v partx >/dev/null 2>&1; then
+	log "parted/partx not installed, skip"
+	done_pt
+fi
+
+# Устройство корня: /dev/root на «/» (ext4) или на «/rom» (squashfs).
+# Поле источника ищется после разделителя «-»: число опциональных полей
+# mountinfo не фиксировано.
+MAJMIN=$(awk '{ for (i = 7; i <= NF && $i != "-"; i++) ; if ($(i + 2) == "/dev/root") { print $3; exit } }' \
+	/proc/self/mountinfo)
+ROOT_BLK=$(readlink -f "/sys/dev/block/$MAJMIN" 2>/dev/null)
+if [ -z "$MAJMIN" ] || [ ! -f "$ROOT_BLK/partition" ]; then
+	log "root is not a partition (${MAJMIN:-?}), skip"
+	done_pt
+fi
+DISK_SYS=${ROOT_BLK%/*}
+ROOT_DISK="/dev/${DISK_SYS##*/}"
+ROOT_PART=$(cat "$ROOT_BLK/partition")
+START=$(cat "$ROOT_BLK/start")      # в 512-байтных секторах, как всё в sysfs
+SIZE_BEFORE=$(cat "$ROOT_BLK/size")
+
+# Граница: начало ближайшего следующего раздела, иначе конец диска; минус
+# 1 МиБ — под резервный заголовок GPT и выравнивание.
+LIMIT=$(cat "$DISK_SYS/size")
+for p in "$DISK_SYS"/*/partition; do
+	[ -f "$p" ] || continue
+	s=$(cat "${p%/partition}/start")
+	[ "$s" -gt "$START" ] && [ "$s" -lt "$LIMIT" ] && LIMIT=$s
+done
+NEW_END=$((LIMIT - 2048))
+if [ $((NEW_END - START - SIZE_BEFORE)) -lt 2048 ]; then
+	log "nothing to grow (${SIZE_BEFORE} sectors)"
+	done_pt
+fi
+
+# Сначала отдельный `-s -f print`: на GPT он переносит резервный заголовок,
+# оставшийся посередине диска после увеличения диска ВМ (в режиме tty -f этого
+# не делает, и resizepart затем молча не срабатывает). Потом resizepart: на
+# вопрос о смонтированном разделе «Yes» подаётся через ---pretend-input-tty —
+# в режиме -s parted отвечает «нет».
+parted -s -f "$ROOT_DISK" print >/dev/null 2>&1
+printf 'Yes\n' | parted ---pretend-input-tty -f "$ROOT_DISK" unit s \
+	resizepart "$ROOT_PART" "$((NEW_END - 1))s" >/dev/null 2>&1
+partx -u -n "$ROOT_PART" "$ROOT_DISK" >/dev/null 2>&1
+SIZE_AFTER=$(cat "$ROOT_BLK/size")
+
+if [ "$SIZE_AFTER" -gt "$SIZE_BEFORE" ]; then
+	log "partition $ROOT_DISK#$ROOT_PART grown live (${SIZE_BEFORE} -> ${SIZE_AFTER} sectors)"
+	done_pt
+fi
+
+# Ядро не приняло новый размер. Маркер ставится ДО перезагрузки: одна
+# попытка, не цикл.
+touch /etc/rootpt-resize
+if parted -s "$ROOT_DISK" unit s print 2>/dev/null | \
+	awk -v p="$ROOT_PART" -v sz="$SIZE_BEFORE" '$1 == p { v = $4; sub(/s$/, "", v); found = (v + 0 > sz + 0) } END { exit !found }'; then
+	log "partition table updated, kernel did not pick it up, rebooting"
+	touch /tmp/.root-resize-reboot
+	reboot
+	exit 1
+fi
+log "resizepart failed, partition left as is"
+lock -u /var/lock/root-resize
+exit 0
