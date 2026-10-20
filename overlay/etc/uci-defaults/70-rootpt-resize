@@ -12,6 +12,9 @@
 # Отключить: создать /etc/rootpt-resize заранее.
 
 TAG=rootpt-resize
+# uci-defaults идут в boot (S10) раньше logd (S12): сообщения logger там
+# теряются. Пишем в кольцо ядра — их видят и dmesg, и logread.
+log() { echo "<5>$TAG: $*" > /dev/kmsg 2>/dev/null || logger -t "$TAG" "$*"; }
 [ -e /etc/rootpt-resize ] && exit 0
 
 done_pt() {
@@ -23,7 +26,7 @@ done_pt() {
 lock -n /var/lock/root-resize || exit 1
 
 if ! command -v parted >/dev/null 2>&1 || ! command -v partx >/dev/null 2>&1; then
-	logger -t "$TAG" "parted/partx not installed, skip"
+	log "parted/partx not installed, skip"
 	done_pt
 fi
 
@@ -34,7 +37,7 @@ MAJMIN=$(awk '{ for (i = 7; i <= NF && $i != "-"; i++) ; if ($(i + 2) == "/dev/r
 	/proc/self/mountinfo)
 ROOT_BLK=$(readlink -f "/sys/dev/block/$MAJMIN" 2>/dev/null)
 if [ -z "$MAJMIN" ] || [ ! -f "$ROOT_BLK/partition" ]; then
-	logger -t "$TAG" "root is not a partition (${MAJMIN:-?}), skip"
+	log "root is not a partition (${MAJMIN:-?}), skip"
 	done_pt
 fi
 DISK_SYS=${ROOT_BLK%/*}
@@ -53,20 +56,23 @@ for p in "$DISK_SYS"/*/partition; do
 done
 NEW_END=$((LIMIT - 2048))
 if [ $((NEW_END - START - SIZE_BEFORE)) -lt 2048 ]; then
-	logger -t "$TAG" "nothing to grow (${SIZE_BEFORE} sectors)"
+	log "nothing to grow (${SIZE_BEFORE} sectors)"
 	done_pt
 fi
 
-# -f: на GPT parted чинит резервный заголовок, оставшийся посередине диска
-# после увеличения диска ВМ. На вопрос о смонтированном разделе «Yes»
-# подаётся через ---pretend-input-tty: в режиме -s parted отвечает «нет».
+# Сначала отдельный `-s -f print`: на GPT он переносит резервный заголовок,
+# оставшийся посередине диска после увеличения диска ВМ (в режиме tty -f этого
+# не делает, и resizepart затем молча не срабатывает). Потом resizepart: на
+# вопрос о смонтированном разделе «Yes» подаётся через ---pretend-input-tty —
+# в режиме -s parted отвечает «нет».
+parted -s -f "$ROOT_DISK" print >/dev/null 2>&1
 printf 'Yes\n' | parted ---pretend-input-tty -f "$ROOT_DISK" unit s \
 	resizepart "$ROOT_PART" "$((NEW_END - 1))s" >/dev/null 2>&1
 partx -u -n "$ROOT_PART" "$ROOT_DISK" >/dev/null 2>&1
 SIZE_AFTER=$(cat "$ROOT_BLK/size")
 
 if [ "$SIZE_AFTER" -gt "$SIZE_BEFORE" ]; then
-	logger -t "$TAG" "partition $ROOT_DISK#$ROOT_PART grown live (${SIZE_BEFORE} -> ${SIZE_AFTER} sectors)"
+	log "partition $ROOT_DISK#$ROOT_PART grown live (${SIZE_BEFORE} -> ${SIZE_AFTER} sectors)"
 	done_pt
 fi
 
@@ -75,11 +81,11 @@ fi
 touch /etc/rootpt-resize
 if parted -s "$ROOT_DISK" unit s print 2>/dev/null | \
 	awk -v p="$ROOT_PART" -v sz="$SIZE_BEFORE" '$1 == p { v = $4; sub(/s$/, "", v); found = (v + 0 > sz + 0) } END { exit !found }'; then
-	logger -t "$TAG" "partition table updated, kernel did not pick it up, rebooting"
+	log "partition table updated, kernel did not pick it up, rebooting"
 	touch /tmp/.root-resize-reboot
 	reboot
 	exit 1
 fi
-logger -t "$TAG" "resizepart failed, partition left as is"
+log "resizepart failed, partition left as is"
 lock -u /var/lock/root-resize
 exit 0

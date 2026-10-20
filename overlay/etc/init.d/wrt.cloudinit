@@ -22,6 +22,7 @@ FIRSTBOOT_SCRIPT=/usr/libexec/bisquite-firstboot.sh
 RESIZE_REBOOT_FLAG=/tmp/.root-resize-reboot
 SEED_DEV=
 SEED_CLASS=
+CI_ADMIN_HASH=
 # Путь должен совпадать с тем, куда COPY_IN кладёт lib/ в openwrt.vmfile
 # (virt-customize --copy-in вкладывает basename: lib → /usr/lib/wrt-cloudinit/lib).
 WRT_LIBDIR=/usr/lib/wrt-cloudinit/lib
@@ -298,16 +299,6 @@ validate_username() {
 	[ "${#1}" -le 32 ]
 }
 
-next_id_from() {
-	local file=$1 floor=${2:-1000}
-	[ -f "$file" ] || return 1
-	awk -F: -v floor="$floor" '
-		BEGIN{max=floor-1}
-		$3>=floor && $3>max {max=$3}
-		END{print max+1}
-	' "$file"
-}
-
 hash_password() {
 	local plain=$1 hashed=
 
@@ -524,6 +515,7 @@ create_ci_admin() {
 
 	update_passwd_entry "$username" "$uid" "$gid" "$comment" "$home" "$shell"
 	update_shadow_entry "$username" "$hash"
+	[ -n "$CI_ADMIN_HASH" ] || CI_ADMIN_HASH=$hash
 	ensure_home "$home" "$username" "$username"
 	configure_rpcd_login "$username" || logger -t "$PROG" "rpcd ACL setup failed for $username"
 
@@ -727,6 +719,28 @@ EOF
 	return 0
 }
 
+# ------------------------------------------- root без пароля ----------
+# Чистый OpenWrt — root без пароля, а dropbear и LuCI пускают по пустому
+# паролю. Сид Proxmox с ciuser≠root пароль root не задаёт, и с открытым WAN
+# машина оставалась доступна всем как root без пароля (проверено на 25.12).
+# Если сид дал пароль пользователю — root получает тот же хеш (на OpenWrt нет
+# sudo, админ — это root); если паролей нет вовсе — вход root по паролю по SSH
+# выключается, остаются ключи и локальная консоль.
+ensure_root_not_open() {
+	local cur
+	cur=$(awk -F: '$1=="root"{print $2; exit}' /etc/shadow 2>/dev/null)
+	[ -z "$cur" ] || return 0
+	if [ -n "$CI_ADMIN_HASH" ]; then
+		set_root_password "$CI_ADMIN_HASH"
+		logger -t "$PROG" "root had empty password: set to the seed user's password"
+		return 0
+	fi
+	uci -q set dropbear.main.RootPasswordAuth='off'
+	uci -q commit dropbear
+	/etc/init.d/dropbear restart >/dev/null 2>&1 || true
+	logger -t "$PROG" "root has no password and seed gives none: SSH password login for root disabled"
+}
+
 # --------------------------------------------------------------- main --
 start_service() {
 	local SEED_ID prev_id
@@ -773,6 +787,7 @@ start_service() {
 
 	logger -t "$PROG" "provisioning instance '$SEED_ID' from $SEED_DEV ($SEED_CLASS)"
 	apply_user_data
+	ensure_root_not_open
 	ensure_root_rpcd_login
 	if apply_network_config; then
 		run_firstboot_commands

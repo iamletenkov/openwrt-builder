@@ -6,7 +6,9 @@
 # (онлайн-ресайз ядра). Прежний путь — `losetup` поверх смонтированного корня и
 # офлайн-`resize2fs` по loop — менял ФС в обход ядра, державшего её
 # смонтированной на запись: ядро затем писало свой старый суперблок поверх
-# нового. Это прямой путь к порче корня, поэтому его здесь нет.
+# нового. Это прямой путь к порче корня, поэтому его здесь нет. Онлайн-рост
+# работает потому, что build-image.sh пересобирает корень mke2fs: ФС от
+# make_ext4fs ядро растит лишь на одну группу и падает с EINVAL.
 #
 # squashfs + overlay ext4: `losetup -c` (перечитать ёмкость loop) и онлайн
 # `resize2fs`. Overlay на f2fs (ImageBuilder выбирает его для больших
@@ -17,6 +19,9 @@
 # Отключить: создать /etc/rootfs-resize заранее.
 
 TAG=rootfs-resize
+# uci-defaults идут в boot (S10) раньше logd (S12): сообщения logger там
+# теряются. Пишем в кольцо ядра — их видят и dmesg, и logread.
+log() { echo "<5>$TAG: $*" > /dev/kmsg 2>/dev/null || logger -t "$TAG" "$*"; }
 [ -e /etc/rootfs-resize ] && exit 0
 [ -e /etc/rootpt-resize ] || exit 1
 [ -e /tmp/.root-resize-reboot ] && exit 1
@@ -29,7 +34,7 @@ finish() {
 }
 
 if ! command -v resize2fs >/dev/null 2>&1; then
-	logger -t "$TAG" "resize2fs not installed, skip"
+	log "resize2fs not installed, skip"
 	finish
 fi
 
@@ -55,10 +60,10 @@ if [ -n "$1" ]; then
 		ext4)
 			losetup -c "$OV_DEV" >/dev/null 2>&1
 			resize2fs "$OV_DEV" >/dev/null 2>&1
-			logger -t "$TAG" "overlay $OV_DEV grown live, $(fill_pct /overlay "$PART_SECT")% of partition"
+			log "overlay $OV_DEV grown live, $(fill_pct /overlay "$PART_SECT")% of partition"
 			;;
 		*)
-			logger -t "$TAG" "overlay is $OV_FS, online grow not supported, skip"
+			log "overlay is $OV_FS, online grow not supported, skip"
 			;;
 	esac
 	finish
@@ -66,20 +71,20 @@ fi
 
 set -- $(mount_line /)
 if [ "$2" != ext4 ]; then
-	logger -t "$TAG" "root fs is ${2:-unknown}, skip"
+	log "root fs is ${2:-unknown}, skip"
 	finish
 fi
 ROOT_SYS=$(readlink -f "/sys/dev/block/$1")
 ROOT_DEV="/dev/${ROOT_SYS##*/}"
 PART_SECT=$(cat "$ROOT_SYS/size")
 if [ ! -b "$ROOT_DEV" ]; then
-	logger -t "$TAG" "no device node $ROOT_DEV, skip"
+	log "no device node $ROOT_DEV, skip"
 	finish
 fi
 
 if resize2fs "$ROOT_DEV" >/tmp/rootfs-resize.log 2>&1; then
-	logger -t "$TAG" "root $ROOT_DEV grown online, $(fill_pct / "$PART_SECT")% of partition"
+	log "root $ROOT_DEV grown online, $(fill_pct / "$PART_SECT")% of partition"
 else
-	logger -t "$TAG" "online resize2fs failed: $(tail -n 1 /tmp/rootfs-resize.log)"
+	log "online resize2fs failed: $(tail -n 1 /tmp/rootfs-resize.log)"
 fi
 finish

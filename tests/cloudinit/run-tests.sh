@@ -243,6 +243,14 @@ assert_eq "provisioned_instance_id: после провижна" "pve-1" "$(prov
 rm -rf "$TMP"
 unset WRT_STATE_DIR
 
+# --- next_id_from ---
+IDF=$(mktemp)
+printf 'root:x:0:0::/root:/bin/ash\nnobody:*:65534:65534:nobody:/var:/bin/false\n' > "$IDF"
+assert_eq "next_id_from: nobody (65534) не сдвигает нумерацию" "1000" "$(next_id_from "$IDF" 1000)"
+printf 'ops:x:1000:1000::/home/ops:/bin/ash\n' >> "$IDF"
+assert_eq "next_id_from: следующий после 1000" "1001" "$(next_id_from "$IDF" 1000)"
+rm -f "$IDF"
+
 # --- seed.sh: доверенный источник сида ---
 # Поддельный sysfs: корень на vda2; vda3 — cidata на загрузочном диске;
 # vdb1 — второй диск; sda1 — USB-флешка; sr0 — привод гипервизора (IDE);
