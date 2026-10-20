@@ -2,11 +2,13 @@ name: Build OpenWrt Images
 
 # Запуск:
 #   • тег v*.*.* — все таргеты (x86/64, armsr/armv8, RPi 4, RPi 5) и релиз GitHub;
-#   • вручную (Actions → Run workflow) — один таргет или все, релиз по флагу publish.
+#   • вручную (Actions → Run workflow) — один таргет или все, релиз по флагу publish;
+#   • pull request — тесты, actionlint и сборка всех таргетов, без релиза.
 on:
   push:
     tags:
       - "v*.*.*"
+  pull_request:
   workflow_dispatch:
     inputs:
       openwrt_release:
@@ -37,6 +39,11 @@ on:
 permissions:
   contents: read
 
+# Новый пуш в PR отменяет прежний прогон; тег и ручной запуск не отменяются.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 env:
   OPENWRT_RELEASE: ${{ inputs.openwrt_release || '25.12.6' }}
   ROOTFS_SIZE: 1024
@@ -49,6 +56,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Тесты скриптов образа (wrt.cloudinit, ресайз)
         run: make test
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.7 -color
 
   matrix:
     runs-on: ubuntu-latest
@@ -57,7 +66,7 @@ jobs:
     steps:
       - id: m
         env:
-          ALL: ${{ github.event_name == 'push' || inputs.all_targets }}
+          ALL: ${{ github.event_name != 'workflow_dispatch' || inputs.all_targets }}
           T: ${{ inputs.target }}
           S: ${{ inputs.subtarget }}
           P: ${{ inputs.profile }}

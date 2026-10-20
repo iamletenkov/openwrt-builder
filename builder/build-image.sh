@@ -30,10 +30,14 @@ FILES_DIR=${FILES_DIR:-${WORK_DIR}/files}         # пользовательск
 OUTPUT_ROOT=${OUTPUT_ROOT:-${WORK_DIR}/output}
 CACHE_DIR=${CACHE_DIR:-${WORK_DIR}/cache}
 
-case "$OPENWRT_RELEASE" in
-  [0-9][0-9].[0-9]*) ;;
-  *) echo "→ OPENWRT_RELEASE='$OPENWRT_RELEASE' не похож на номер релиза" >&2; exit 1 ;;
-esac
+# Значения идут в URL и пути (cache/, output/): только ожидаемый алфавит —
+# workflow_dispatch передаёт их из полей формы как есть.
+[[ "$OPENWRT_RELEASE" =~ ^[0-9]{2}\.[0-9]{1,2}\.[0-9]+(-rc[0-9]+)?$ ]] || {
+  echo "→ OPENWRT_RELEASE='$OPENWRT_RELEASE' не похож на номер релиза" >&2; exit 1; }
+for v in TARGET SUBTARGET PROFILE; do
+  [[ "${!v}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "→ $v='${!v}': допустимы a-z, 0-9, _ и -" >&2; exit 1; }
+done
+[[ "$ROOTFS_SIZE" =~ ^[0-9]+$ && "$JOBS" =~ ^[0-9]+$ ]] || { echo "→ ROOTFS_SIZE и JOBS — числа" >&2; exit 1; }
 major=${OPENWRT_RELEASE%%.*}
 rest=${OPENWRT_RELEASE#*.}; minor=${rest%%[!0-9]*}
 if (( 10#$major < 25 || (10#$major == 25 && 10#$minor < 12) )); then
