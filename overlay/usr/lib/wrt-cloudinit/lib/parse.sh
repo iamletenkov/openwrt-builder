@@ -246,3 +246,18 @@ parse_runcmd() {
 		}
 	' "$1"
 }
+
+# parse_toplevel_ssh_keys <user-data> → ключи из `ssh_authorized_keys:` верхнего
+# уровня. Так их пишет Proxmox (`qm set --sshkeys`): ключи «пользователя по
+# умолчанию», а не элемента списка `users:`.
+parse_toplevel_ssh_keys() {
+	awk '
+		/^ssh_authorized_keys:[ ]*$/ { on = 1; next }
+		on && /^[ ]*-/ {
+			v = $0; sub(/^[ ]*-[ ]*/, "", v); gsub(/["\047]/, "", v)
+			if (v != "") print v
+			next
+		}
+		on && /^[^ ]/ { on = 0 }
+	' "$1"
+}

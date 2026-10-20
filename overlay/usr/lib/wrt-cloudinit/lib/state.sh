@@ -7,6 +7,7 @@ _wrt_state_file() { printf '%s/instance-id' "$WRT_STATE_DIR"; }
 
 # already_provisioned <instance-id> → 0, если сохранённый id == аргумент (непуст)
 already_provisioned() {
+	local f
 	f=$(_wrt_state_file)
 	[ -f "$f" ] || return 1
 	[ -n "$1" ] && [ "$1" = "$(cat "$f" 2>/dev/null)" ]
@@ -16,4 +17,9 @@ already_provisioned() {
 mark_provisioned() {
 	mkdir -p "$WRT_STATE_DIR" || return 1
 	printf '%s\n' "$1" > "$(_wrt_state_file)"
+}
+
+# provisioned_instance_id → id последнего успешного провижна (пусто, если не было)
+provisioned_instance_id() {
+	cat "$(_wrt_state_file)" 2>/dev/null
 }

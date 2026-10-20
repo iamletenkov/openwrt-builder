@@ -2,8 +2,9 @@
 # Тест-харнесс wrt.cloudinit — гоняется на билд-хосте (POSIX sh + awk).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-ROOT=$(cd "$HERE/.." && pwd)
-LIB="$ROOT/lib"
+ROOT=$(cd "$HERE/../../overlay" && pwd)
+LIB="$ROOT/usr/lib/wrt-cloudinit/lib"
+WRT="$ROOT/etc/init.d/wrt.cloudinit"
 FIX="$HERE/fixtures"
 fail=0
 
@@ -33,8 +34,11 @@ done
 # Почему не `--enable=all`: он даёт 1621 строку замечаний о стиле, то есть
 # сторож утонул бы в шуме. Этот флаг находит ровно тот класс и ничего больше.
 shellcheck -s dash -o check-unassigned-uppercase -e SC1090,SC1091,SC2034 \
-	"$ROOT/wrt.cloudinit" || die "shellcheck wrt.cloudinit"
-sh -n "$ROOT/wrt.cloudinit" || die "sh -n wrt.cloudinit"
+	"$WRT" || die "shellcheck wrt.cloudinit"
+sh -n "$WRT" || die "sh -n wrt.cloudinit"
+for f in "$ROOT"/etc/uci-defaults/*; do
+	shellcheck -s dash -e SC2046,SC2086 "$f" || die "shellcheck $f"
+done
 
 # --- parse_netcfg ---
 assert_eq "parse_netcfg wan-dhcp-lan-static" \
@@ -220,5 +224,83 @@ if already_provisioned "x2"; then die "state: diff id → not provisioned"; else
 if already_provisioned ""; then die "state: empty id arg → not provisioned"; else pass "state: empty id arg → not provisioned"; fi
 rm -rf "$TMP"
 unset WRT_STATE_DIR
+
+# --- parse_toplevel_ssh_keys (Proxmox: --sshkeys) ---
+PVE="$FIX/proxmox-flat-user"
+assert_eq "parse_toplevel_ssh_keys: ключи верхнего уровня" \
+"ssh-ed25519 AAAAC3NzaPVE one@pve
+ssh-rsa AAAAB3NzaPVE two@pve" \
+"$(parse_toplevel_ssh_keys "$PVE/user-data")"
+assert_eq "parse_toplevel_ssh_keys: ключи из users: не берутся" "" \
+"$(parse_toplevel_ssh_keys "$BSW/user-data")"
+
+# --- provisioned_instance_id ---
+TMP=$(mktemp -d)
+WRT_STATE_DIR="$TMP/state"
+assert_eq "provisioned_instance_id: пусто до провижна" "" "$(provisioned_instance_id)"
+mark_provisioned "pve-1" >/dev/null
+assert_eq "provisioned_instance_id: после провижна" "pve-1" "$(provisioned_instance_id)"
+rm -rf "$TMP"
+unset WRT_STATE_DIR
+
+# --- seed.sh: доверенный источник сида ---
+# Поддельный sysfs: корень на vda2; vda3 — cidata на загрузочном диске;
+# vdb1 — второй диск; sda1 — USB-флешка; sr0 — привод гипервизора (IDE);
+# sr1 — USB-привод; mmcblk0 — SD (для проверки «съёмности»).
+FS=$(mktemp -d)
+mkdev() { # <путь в devices> <maj:min> [partition-номер]
+	mkdir -p "$FS/devices/$1"
+	n=$(basename "$1")
+	mkdir -p "$FS/class/block" "$FS/dev/block"
+	ln -s "../../devices/$1" "$FS/class/block/$n"
+	ln -s "../../devices/$1" "$FS/dev/block/$2"
+	[ -n "${3:-}" ] && echo "$3" > "$FS/devices/$1/partition"
+	return 0
+}
+mkdev pci0/virtio1/block/vda 254:0
+mkdev pci0/virtio1/block/vda/vda2 254:2 2
+mkdev pci0/virtio1/block/vda/vda3 254:3 3
+mkdev pci0/virtio2/block/vdb 254:16
+mkdev pci0/virtio2/block/vdb/vdb1 254:17 1
+mkdev pci0/usb1/1-1/host6/target6/block/sda 8:0
+mkdev pci0/usb1/1-1/host6/target6/block/sda/sda1 8:1 1
+mkdev pci0/ata2/host1/target1/block/sr0 11:0
+mkdev pci0/usb2/2-1/host7/target7/block/sr1 11:1
+mkdev platform/mmc0/block/mmcblk0 179:0
+mkdev platform/mmc0/block/mmcblk0/mmcblk0p3 179:3 3
+echo 1 > "$FS/devices/pci0/ata2/host1/target1/block/sr0/removable"
+echo 1 > "$FS/devices/pci0/usb1/1-1/host6/target6/block/sda/removable"
+MI="$FS/mountinfo"
+printf '%s\n' \
+	'22 1 254:2 / / rw,noatime - ext4 /dev/root rw' \
+	'23 22 0:5 / /proc rw - proc proc rw' > "$MI"
+CPU="$FS/cpuinfo"; printf 'flags\t\t: fpu sse2 hypervisor\n' > "$CPU"
+WRT_SYS=$FS WRT_MOUNTINFO=$MI WRT_CPUINFO=$CPU
+assert_eq "seed: root_disk = vda" "vda" "$(root_disk)"
+assert_eq "seed: cidata на загрузочном диске → bootdisk" "bootdisk" "$(classify_seed_dev /dev/vda3)"
+assert_eq "seed: второй диск → untrusted" "untrusted" "$(classify_seed_dev /dev/vdb1)"
+assert_eq "seed: второй диск целиком → untrusted" "untrusted" "$(classify_seed_dev vdb)"
+assert_eq "seed: USB-флешка → untrusted" "untrusted" "$(classify_seed_dev /dev/sda1)"
+assert_eq "seed: привод гипервизора → hypervisor" "hypervisor" "$(classify_seed_dev /dev/sr0)"
+assert_eq "seed: USB-привод → untrusted" "untrusted" "$(classify_seed_dev /dev/sr1)"
+assert_eq "seed: несуществующее устройство → untrusted" "untrusted" "$(classify_seed_dev /dev/nope0)"
+if seed_dev_removable /dev/sr0; then die "seed: привод гипервизора не съёмный"; else pass "seed: привод гипервизора не съёмный"; fi
+if seed_dev_removable /dev/vda3; then die "seed: virtio-диск не съёмный"; else pass "seed: virtio-диск не съёмный"; fi
+if seed_dev_removable /dev/mmcblk0p3; then pass "seed: SD-карта съёмная"; else die "seed: SD-карта съёмная"; fi
+# Железо (нет флага hypervisor и DMI гипервизора): CD-привод не доверенный.
+printf 'flags\t\t: fpu sse2\n' > "$CPU"
+assert_eq "seed: CD-привод на железе → untrusted" "untrusted" "$(classify_seed_dev /dev/sr0)"
+mkdir -p "$FS/class/dmi/id"; echo QEMU > "$FS/class/dmi/id/sys_vendor"
+assert_eq "seed: arm-ВМ без флага, DMI QEMU → hypervisor" "hypervisor" "$(classify_seed_dev /dev/sr0)"
+# RPi: корень на SD — cidata на той же карте доверенная, флешка — нет.
+printf '%s\n' '22 1 179:2 / / rw - ext4 /dev/root rw' > "$MI"
+mkdev platform/mmc0/block/mmcblk0/mmcblk0p2 179:2 2
+assert_eq "seed: RPi, cidata на SD-карте корня → bootdisk" "bootdisk" "$(classify_seed_dev /dev/mmcblk0p3)"
+assert_eq "seed: RPi, cidata на флешке → untrusted" "untrusted" "$(classify_seed_dev /dev/sda1)"
+# squashfs: /dev/root смонтирован на /rom
+printf '%s\n' '15 1 254:2 / /rom ro - squashfs /dev/root ro' '16 1 0:20 / / rw - overlay overlayfs:/overlay rw' > "$MI"
+assert_eq "seed: squashfs, root_disk по /rom = vda" "vda" "$(root_disk)"
+unset WRT_SYS WRT_MOUNTINFO WRT_CPUINFO
+rm -rf "$FS"
 
 [ "$fail" = 0 ] && { echo "ALL PASS"; exit 0; } || { echo "FAILURES"; exit 1; }

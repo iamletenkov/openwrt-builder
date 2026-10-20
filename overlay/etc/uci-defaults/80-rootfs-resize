@@ -1,61 +1,85 @@
 #!/bin/sh
-# Расширить корневую ФАЙЛОВУЮ СИСТЕМУ на весь раздел.
+# Расширить корневую ФАЙЛОВУЮ СИСТЕМУ на весь раздел — онлайн, без
+# перезагрузки и без обходов.
 #
-# Раскладок две, и ведут они себя по-разному.
+# ext4-combined: корень смонтирован напрямую, растёт `resize2fs <раздел>`
+# (онлайн-ресайз ядра). Прежний путь — `losetup` поверх смонтированного корня и
+# офлайн-`resize2fs` по loop — менял ФС в обход ядра, державшего её
+# смонтированной на запись: ядро затем писало свой старый суперблок поверх
+# нового. Это прямой путь к порче корня, поэтому его здесь нет.
 #
-# squashfs+overlay: корень только для чтения, растёт loop с overlay. Ему
-# достаточно `losetup -c` (перечитать ёмкость раздела) и онлайн-ресайза —
-# перезагрузка не нужна.
+# squashfs + overlay ext4: `losetup -c` (перечитать ёмкость loop) и онлайн
+# `resize2fs`. Overlay на f2fs (ImageBuilder выбирает его для больших
+# разделов) онлайн не растёт — записываем в журнал и выходим.
 #
-# ext4-combined: overlay нет, корень смонтирован напрямую. Онлайн-ресайз
-# смонтированного корня на этом ядре расширяет ФС НЕ ПОЛНОСТЬЮ: замер дал
-# 622 МБ вместо 2.9 ГБ на трёхгигабайтном разделе, причём resize2fs вышел
-# нулём. Поэтому здесь по-прежнему loop плюс перезагрузка — путь, который
-# даёт правильный размер.
-#
-# Успех живого пути проверяется ЗАПОЛНЕНИЕМ раздела, а не фактом роста:
-# «выросло» было правдой и в неполном случае.
+# Ждёт 70-rootpt-resize (маркер /etc/rootpt-resize) и не работает, если тот
+# ушёл в перезагрузку. Готово → код 0 (скрипт удаляется).
+# Отключить: создать /etc/rootfs-resize заранее.
 
-if [ ! -e /etc/rootfs-resize ] \
-&& [ -e /etc/rootpt-resize ] \
-&& type losetup > /dev/null \
-&& type resize2fs > /dev/null \
-&& lock -n /var/lock/root-resize
-then
-ROOT_BLK="$(readlink -f /sys/dev/block/"$(awk -e \
-'$9=="/dev/root"{print $3}' /proc/self/mountinfo)")"
-ROOT_DEV="/dev/${ROOT_BLK##*/}"
-LOOP_DEV="$(awk -e '$5=="/overlay"{print $9}' \
-/proc/self/mountinfo)"
-PART_KB="$(awk '{print int($1/2)}' "${ROOT_BLK}/size" 2>/dev/null)"
+TAG=rootfs-resize
+[ -e /etc/rootfs-resize ] && exit 0
+[ -e /etc/rootpt-resize ] || exit 1
+[ -e /tmp/.root-resize-reboot ] && exit 1
+lock -n /var/lock/root-resize || exit 1
 
-if [ -n "${LOOP_DEV}" ]
-then
-# overlay: пробуем без перезагрузки
-losetup -c "${LOOP_DEV}" > /dev/null 2>&1
-KB_BEFORE="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $2}')"
-resize2fs -f "${LOOP_DEV}"
-KB_AFTER="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $2}')"
-mount_root done
-touch /etc/rootfs-resize
-if [ -n "${KB_AFTER}" ] && [ -n "${PART_KB}" ] \
-&& [ "$(( KB_AFTER * 100 / PART_KB ))" -ge 90 ]
-then
-logger -t rootfs-resize "overlay grown live (${KB_BEFORE:-?} -> ${KB_AFTER} of ${PART_KB} KiB)"
-lock -u /var/lock/root-resize
-exit 1
-fi
-logger -t rootfs-resize "live resize incomplete (${KB_AFTER:-?} of ${PART_KB:-?} KiB), rebooting"
-reboot
-exit 1
+finish() {
+	touch /etc/rootfs-resize
+	lock -u /var/lock/root-resize
+	exit 0
+}
+
+if ! command -v resize2fs >/dev/null 2>&1; then
+	logger -t "$TAG" "resize2fs not installed, skip"
+	finish
 fi
 
-# ext4-combined: только loop и перезагрузка — онлайн-путь здесь неполон.
-LOOP_DEV="$(losetup -f)"
-losetup "${LOOP_DEV}" "${ROOT_DEV}"
-resize2fs -f "${LOOP_DEV}"
-mount_root done
-touch /etc/rootfs-resize
-reboot
+# mount_line <точка монтирования> → «maj:min fstype source»
+mount_line() {
+	awk -v mp="$1" '$5 == mp { for (i = 7; i <= NF && $i != "-"; i++) ; print $3, $(i + 1), $(i + 2); exit }' \
+		/proc/self/mountinfo
+}
+
+# fill_pct <точка монтирования> <размер раздела, сектора> → заполнение в %
+fill_pct() {
+	df -k "$1" 2>/dev/null | awk -v sec="$2" 'NR == 2 && sec > 0 { printf "%d\n", $2 * 2 * 100 / sec }'
+}
+
+set -- $(mount_line /overlay)
+if [ -n "$1" ]; then
+	# squashfs + overlay
+	OV_FS=$2
+	OV_DEV=$3
+	ROM_MM=$(mount_line /rom | cut -d' ' -f1)
+	PART_SECT=$(cat "$(readlink -f "/sys/dev/block/$ROM_MM")/size" 2>/dev/null)
+	case "$OV_FS" in
+		ext4)
+			losetup -c "$OV_DEV" >/dev/null 2>&1
+			resize2fs "$OV_DEV" >/dev/null 2>&1
+			logger -t "$TAG" "overlay $OV_DEV grown live, $(fill_pct /overlay "$PART_SECT")% of partition"
+			;;
+		*)
+			logger -t "$TAG" "overlay is $OV_FS, online grow not supported, skip"
+			;;
+	esac
+	finish
 fi
-exit 1
+
+set -- $(mount_line /)
+if [ "$2" != ext4 ]; then
+	logger -t "$TAG" "root fs is ${2:-unknown}, skip"
+	finish
+fi
+ROOT_SYS=$(readlink -f "/sys/dev/block/$1")
+ROOT_DEV="/dev/${ROOT_SYS##*/}"
+PART_SECT=$(cat "$ROOT_SYS/size")
+if [ ! -b "$ROOT_DEV" ]; then
+	logger -t "$TAG" "no device node $ROOT_DEV, skip"
+	finish
+fi
+
+if resize2fs "$ROOT_DEV" >/tmp/rootfs-resize.log 2>&1; then
+	logger -t "$TAG" "root $ROOT_DEV grown online, $(fill_pct / "$PART_SECT")% of partition"
+else
+	logger -t "$TAG" "online resize2fs failed: $(tail -n 1 /tmp/rootfs-resize.log)"
+fi
+finish

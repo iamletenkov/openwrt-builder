@@ -2,8 +2,14 @@
 #
 # wrt.cloudinit – Cloud-Init (NoCloud) for OpenWrt on Proxmox 8 (LXC/KVM)
 #
-#   • eth0 → WAN  (static | dhcp4) — клиент; LuCI доступна извне
-#   • ethX → LAN* (static → DHCP-server, dhcp4 → DHCP-client)
+#   • eth0 → WAN  (static | dhcp4) — клиент; на WAN открыты только SSH,
+#     LuCI (80/443), ICMP и продление DHCP
+#   • ethX → LAN* (static → DHCP-server, dhcp4 → DHCP-client), LAN → WAN с NAT
+#
+# Сид берётся только из доверенного источника (lib/seed.sh): CD-ROM
+# гипервизора или раздел cidata на загрузочном диске. Флешки и вторые диски
+# игнорируются. Повторный провижн со съёмного носителя (SD/USB) — только при
+# `uci set wrt_cloudinit.main.allow_removable_reprovision=1`.
 #
 
 START=47
@@ -13,6 +19,9 @@ PROG="wrt.cloudinit"
 CIDATA=/mnt/cidata
 CLOUDINIT_READY_FLAG=/run/wrt-cloudinit.ready
 FIRSTBOOT_SCRIPT=/usr/libexec/bisquite-firstboot.sh
+RESIZE_REBOOT_FLAG=/tmp/.root-resize-reboot
+SEED_DEV=
+SEED_CLASS=
 # Путь должен совпадать с тем, куда COPY_IN кладёт lib/ в openwrt.vmfile
 # (virt-customize --copy-in вкладывает basename: lib → /usr/lib/wrt-cloudinit/lib).
 WRT_LIBDIR=/usr/lib/wrt-cloudinit/lib
@@ -32,37 +41,63 @@ load_libs() {
 }
 
 # ---------------------------------------------------------------- cidata
-command -v mountpoint >/dev/null 2>&1 || alias mountpoint='busybox mountpoint'
+is_mounted() {
+	grep -q " $1 " /proc/mounts 2>/dev/null
+}
 
+# seed_label <dev> → метка ФС (пусто, если не определить)
+seed_label() {
+	command -v blkid >/dev/null 2>&1 || return 0
+	blkid -s LABEL -o value "$1" 2>/dev/null
+}
+
+# seed_candidates → устройства, похожие на сид: все CD-ROM и все разделы с
+# меткой cidata. Доверие решает classify_seed_dev, а не этот список.
+seed_candidates() {
+	local d
+	for d in /dev/sr[0-9]*; do
+		[ -b "$d" ] && echo "$d"
+	done
+	if command -v blkid >/dev/null 2>&1; then
+		blkid -o device -t LABEL=cidata 2>/dev/null
+		blkid -o device -t LABEL=CIDATA 2>/dev/null
+	fi
+}
+
+# mount_cidata → смонтировать доверенный сид в $CIDATA; заполняет SEED_DEV и
+# SEED_CLASS. Гипервизор предпочтительнее загрузочного диска.
 mount_cidata() {
+	local dev cls want label
 	[ -d "$CIDATA" ] || mkdir -p "$CIDATA"
-	mountpoint -q "$CIDATA" && return 0
+	is_mounted "$CIDATA" && umount "$CIDATA" 2>/dev/null
 
-	# /dev/sr0 — сид от Proxmox: адаптер вешает его как ide2 media=cdrom.
-	mount -o ro /dev/sr0 "$CIDATA" 2>/dev/null && return 0
-
-	# Раздел с меткой cidata — сид от `bs device write`: писалка создаёт
-	# FAT32-раздел в конце носителя. Раньше он не искался вовсе, и карта,
-	# записанная бисквитом, приезжала без пользователя, пароля и сети.
-	for dev in $(find_cidata_device); do
-		mount -o ro "$dev" "$CIDATA" 2>/dev/null && return 0
+	for want in hypervisor bootdisk; do
+		for dev in $(seed_candidates | sort -u); do
+			cls=$(classify_seed_dev "$dev")
+			if [ "$cls" = untrusted ]; then
+				[ "$want" = hypervisor ] && \
+					logger -t "$PROG" "ignoring seed candidate $dev: not hypervisor drive, not boot disk"
+				continue
+			fi
+			[ "$cls" = "$want" ] || continue
+			label=$(seed_label "$dev")
+			case "$label" in
+				cidata|CIDATA) ;;
+				*) continue ;;
+			esac
+			if mount -o ro,nosuid,nodev,noexec "$dev" "$CIDATA" 2>/dev/null; then
+				SEED_DEV=$dev
+				SEED_CLASS=$cls
+				logger -t "$PROG" "seed: $dev ($cls)"
+				return 0
+			fi
+		done
 	done
 	return 1
 }
 
-# find_cidata_device → пути блочных устройств с меткой cidata (0 или больше)
-find_cidata_device() {
-	# `block info` есть в OpenWrt всегда (пакет block-mount), `blkid` — не всегда.
-	if command -v block >/dev/null 2>&1; then
-		block info 2>/dev/null | sed -n 's|^\(/dev/[^:]*\):.*LABEL="cidata".*|\1|p'
-	fi
-	if command -v blkid >/dev/null 2>&1; then
-		blkid -t LABEL=cidata -o device 2>/dev/null
-	fi
-}
-
 umount_cidata() {
-	mountpoint -q "$CIDATA" || return 0
+	is_mounted "$CIDATA" || return 0
 	umount "$CIDATA" && rmdir "$CIDATA"
 }
 
@@ -90,14 +125,19 @@ apply_user_data() {
 
 	local host ci_user ci_pass
 	host=$(awk -F': *' '$1=="hostname"||$1=="fqdn"{print $2;exit}' "$ud" | tr -d ' "')
-	if [ -n "$host" ]; then
-		# `uci commit system` обязателен: без него имя остаётся в staging,
-		# а staging лежит в tmpfs. Образ по замыслу перезагружается дважды
-		# (70-rootpt-resize и 80-rootfs-resize), и незакоммиченное имя
-		# пропадало. Раньше оно уцелевало только по совпадению тайминга.
-		uci set system.@system[0].hostname="$host"
-		uci commit system
-	fi
+	case "$host" in
+		*[!A-Za-z0-9.-]*|-*|'')
+			[ -n "$host" ] && logger -t "$PROG" "invalid hostname '$host' ignored"
+			;;
+		*)
+			# `system` к S47 уже стартовал: без явного применения имя
+			# появилось бы только после перезагрузки.
+			uci set system.@system[0].hostname="$host"
+			uci commit system
+			echo "$host" > /proc/sys/kernel/hostname
+			/etc/init.d/system reload >/dev/null 2>&1 || true
+			;;
+	esac
 
 	# Плоские ключи — диалект Proxmox: их пишет сам гипервизор при
 	# `bs compose up`.
@@ -119,14 +159,22 @@ apply_user_data() {
 	# плоский ключ, то есть шёл второй веткой и до низа функции доходил.
 	# Это была ловушка для сида, написанного руками или смешанного, а не
 	# действующий отказ.
-	if [ -n "$ci_user" ]; then
+	if [ "$ci_user" = root ]; then
+		# Proxmox с ciuser=root: пароль и ключи — самому root.
+		if [ -n "$ci_pass" ]; then
+			set_root_password "$(prepare_password_hash "$ci_pass")"
+		fi
+		install_key_lines root "$(parse_toplevel_ssh_keys "$ud")"
+	elif [ -n "$ci_user" ]; then
 		if [ -n "$ci_pass" ]; then
 			create_ci_admin "$ci_user" "$ci_pass" || \
 				logger -t "$PROG" "failed to provision user $ci_user"
-			install_ssh_keys "$ci_user" "$ud"
 		else
 			logger -t "$PROG" "user '$ci_user' requested but password missing"
 		fi
+		# Proxmox пишет ключи (`--sshkeys`) на верхний уровень, не в `users:`.
+		install_ssh_keys "$ci_user" "$ud"
+		install_key_lines "$ci_user" "$(parse_toplevel_ssh_keys "$ud")"
 	else
 		# Список `users:` — стандартный cloud-config, его пишет `bs device write`.
 		# `create_ci_admin` готовый хеш пропускает как есть: `prepare_password_hash`
@@ -141,6 +189,7 @@ apply_user_data() {
 				logger -t "$PROG" "failed to provision user $name"
 			install_ssh_keys "$name" "$ud"
 		done
+		install_key_lines root "$(parse_toplevel_ssh_keys "$ud")"
 	fi
 
 	apply_root_password "$ud"
@@ -155,7 +204,12 @@ apply_root_password() {
 	local hash
 	hash=$(parse_root_password "$1")
 	[ -n "$hash" ] || return 0
+	set_root_password "$(prepare_password_hash "$hash")"
+}
 
+set_root_password() {
+	local hash=$1
+	[ -n "$hash" ] || return 0
 	ensure_system_files
 	if ! grep -q '^root:' /etc/shadow 2>/dev/null; then
 		printf 'root:!:0:0:99999:7:::\n' >> /etc/shadow
@@ -198,15 +252,22 @@ stage_runcmd() {
 # владельца; до него `/etc/dropbear` читается как «любой пользователь из сида
 # получает root по своему ключу».
 install_ssh_keys() {
-	local user=$1 file=$2 home keys dir
+	install_key_lines "$1" "$(parse_ssh_keys "$2" "$1")"
+}
 
-	keys=$(parse_ssh_keys "$file" "$user")
+# install_key_lines <user> <ключи построчно>
+install_key_lines() {
+	local user=$1 keys=$2 home dir dirs
 	[ -n "$keys" ] || return 0
 
-	home=$(user_field "$user" 6)
-	[ -n "$home" ] || home="/home/$user"
-
-	for dir in "$home/.ssh" /etc/dropbear; do
+	if [ "$user" = root ]; then
+		dirs=/etc/dropbear
+	else
+		home=$(user_field "$user" 6)
+		[ -n "$home" ] || home="/home/$user"
+		dirs="$home/.ssh /etc/dropbear"
+	fi
+	for dir in $dirs; do
 		[ -d "$dir" ] || mkdir -p "$dir" || continue
 		# Не `>>`: при повторном провижне дописывание удваивало строки.
 		# Почему не `>` — см. merge_authorized_keys в lib/authkeys.sh:
@@ -216,7 +277,7 @@ install_ssh_keys() {
 		chmod 0700 "$dir" 2>/dev/null || true
 		chmod 0600 "$dir/authorized_keys" 2>/dev/null || true
 	done
-	chown -R "$user:$user" "$home/.ssh" 2>/dev/null || true
+	[ "$user" = root ] || chown -R "$user:$user" "$home/.ssh" 2>/dev/null || true
 	logger -t "$PROG" "ssh keys installed for $user"
 }
 
@@ -231,6 +292,7 @@ uci_cmd() {
 validate_username() {
 	case "$1" in
 		''|root) return 1 ;;
+		[!a-z_]*) return 1 ;;
 		*[!a-zA-Z0-9_-]*) return 1 ;;
 	esac
 	[ "${#1}" -le 32 ]
@@ -264,23 +326,6 @@ hash_password() {
 
 	if command -v openssl >/dev/null 2>&1; then
 		if hashed=$(openssl passwd -6 "$plain" 2>/dev/null); then
-			printf '%s\n' "$hashed"
-			return 0
-		fi
-	fi
-
-	if command -v python3 >/dev/null 2>&1; then
-		if hashed=$(python3 - "$plain" <<'PY' 2>/dev/null
-import crypt
-import secrets
-import string
-import sys
-
-alphabet = string.ascii_letters + string.digits + './'
-salt = ''.join(secrets.choice(alphabet) for _ in range(16))
-print(crypt.crypt(sys.argv[1], '$6$' + salt))
-PY
-		); then
 			printf '%s\n' "$hashed"
 			return 0
 		fi
@@ -487,15 +532,14 @@ create_ci_admin() {
 
 # ------------------------- uhttpd helper --------------------------------
 ensure_uhttpd_ready() {
-	local crt=/etc/uhttpd.crt key=/etc/uhttpd.key
-	if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
-		/usr/lib/uhttpd/keygen.sh "$crt" "$key" >/dev/null 2>&1 || true
-	fi
-	if [ ! -s "$crt" ] || [ ! -s "$key" ]; then
+	# Сертификат uhttpd генерирует сам при старте (px5g). Прежний вызов
+	# несуществующего /usr/lib/uhttpd/keygen.sh всегда «проваливался», и HTTPS
+	# выключался насовсем — LuCI оставалась только на HTTP.
+	if [ -s /etc/uhttpd.crt ] || command -v px5g >/dev/null 2>&1; then
+		uci set uhttpd.main.redirect_https='1'
+	else
 		uci set uhttpd.main.redirect_https='0'
 		uci -q delete uhttpd.main.listen_https
-	else
-		uci set uhttpd.main.redirect_https='1'
 	fi
 }
 
@@ -522,10 +566,8 @@ apply_network_config() {
 $(read_dns_any "$nf")
 EOF
 	DNS=$(echo "$DNS" | tr -d ' ')
-	: > /etc/resolv.conf.head
-	[ -n "$SEARCH" ] && echo "search $SEARCH"  >> /etc/resolv.conf.head
-	[ -n "$DNS"    ] && echo "nameserver $DNS" >> /etc/resolv.conf.head
-	cp /etc/resolv.conf.head /etc/resolv.conf
+	# DNS — только через UCI (network.wan.dns, dhcp.domain): /etc/resolv.conf
+	# в OpenWrt — ссылка в tmpfs, её переписывает dnsmasq.
 
 	# ---------- clean network/dhcp -----------------------------------
 	purge_package network
@@ -535,6 +577,9 @@ EOF
 	uci add dhcp dnsmasq >/dev/null
 	uci set dhcp.@dnsmasq[0].domainneeded='1'
 	uci set dhcp.@dnsmasq[0].authoritative='1'
+	uci set dhcp.@dnsmasq[0].localservice='1'
+	uci set dhcp.@dnsmasq[0].rebind_protection='1'
+	[ -n "$SEARCH" ] && uci set dhcp.@dnsmasq[0].domain="$SEARCH"
 
 	uci set network.loopback=interface
 	uci set network.loopback.device='lo'
@@ -557,7 +602,7 @@ EOF
 			fi
 			[ -n "$DNS" ] && {
 				uci set network.wan.peerdns='0'
-				uci set network.wan.dns="$DNS"
+				uci add_list network.wan.dns="$DNS"
 			}
 		else
 			# ------- LANs --------------------------------------------
@@ -609,14 +654,18 @@ EOF
 	# ---------- firewall (reset) -------------------------------------
 	purge_package firewall
 
-	uci add firewall defaults
-	uci set firewall.@defaults[0].input='ACCEPT'
+	# Прежде WAN был открыт целиком (input ACCEPT): наружу смотрели DNS
+	# dnsmasq, rpcd и всё, что слушает порт. Теперь — REJECT и явные
+	# разрешения: SSH и LuCI (доступ к машине по WAN — исходный замысел),
+	# ICMP и продление DHCP.
+	uci add firewall defaults >/dev/null
+	uci set firewall.@defaults[0].input='REJECT'
 	uci set firewall.@defaults[0].output='ACCEPT'
-	uci set firewall.@defaults[0].forward='DROP'
+	uci set firewall.@defaults[0].forward='REJECT'
 	uci set firewall.@defaults[0].synflood_protect='1'
 
 	# ---- LAN zone ----------------------------------------------------
-	uci add firewall zone
+	uci add firewall zone >/dev/null
 	uci set firewall.@zone[-1].name='lan'
 	uci set firewall.@zone[-1].input='ACCEPT'
 	uci set firewall.@zone[-1].output='ACCEPT'
@@ -626,22 +675,33 @@ EOF
 	done
 
 	# ---- WAN zone ----------------------------------------------------
-	uci add firewall zone
+	uci add firewall zone >/dev/null
 	uci set firewall.@zone[-1].name='wan'
-	uci set firewall.@zone[-1].input='ACCEPT'   # нужен доступ к LuCI
+	uci set firewall.@zone[-1].input='REJECT'
 	uci set firewall.@zone[-1].output='ACCEPT'
-	uci set firewall.@zone[-1].forward='DROP'
-	uci add_list firewall.@zone[-1].device="$(uci get network.wan.device)"
+	uci set firewall.@zone[-1].forward='REJECT'
+	uci add_list firewall.@zone[-1].network='wan'
 	uci set firewall.@zone[-1].masq='1'
 	uci set firewall.@zone[-1].mtu_fix='1'
 
-	# ---- правило LuCI ------------------------------------------------
-	uci add firewall rule
-	uci set firewall.@rule[-1].name='Allow-LuCI-from-WAN'
-	uci set firewall.@rule[-1].src='wan'
-	uci set firewall.@rule[-1].proto='tcp'
-	uci set firewall.@rule[-1].dest_port='80 443'
-	uci set firewall.@rule[-1].target='ACCEPT'
+	# Без forwarding LAN-клиенты не выходили в WAN вовсе.
+	uci add firewall forwarding >/dev/null
+	uci set firewall.@forwarding[-1].src='lan'
+	uci set firewall.@forwarding[-1].dest='wan'
+
+	fw_allow_wan() { # name proto port [family]
+		uci add firewall rule >/dev/null
+		uci set firewall.@rule[-1].name="$1"
+		uci set firewall.@rule[-1].src='wan'
+		uci set firewall.@rule[-1].proto="$2"
+		[ -n "$3" ] && uci set firewall.@rule[-1].dest_port="$3"
+		[ -n "$4" ] && uci set firewall.@rule[-1].family="$4"
+		uci set firewall.@rule[-1].target='ACCEPT'
+	}
+	fw_allow_wan Allow-DHCP-Renew udp 68 ipv4
+	fw_allow_wan Allow-Ping icmp '' ipv4
+	fw_allow_wan Allow-SSH-from-WAN tcp 22
+	fw_allow_wan Allow-LuCI-from-WAN tcp '80 443'
 
 	uci commit firewall
 
@@ -649,7 +709,9 @@ EOF
 	uci -q delete uhttpd.main.listen_http
 	uci -q delete uhttpd.main.listen_https
 	uci add_list uhttpd.main.listen_http='0.0.0.0:80'
+	uci add_list uhttpd.main.listen_http='[::]:80'
 	uci add_list uhttpd.main.listen_https='0.0.0.0:443'
+	uci add_list uhttpd.main.listen_https='[::]:443'
 	uci set uhttpd.main.rfc1918_filter='0'
 	ensure_uhttpd_ready
 	uci commit uhttpd
@@ -667,29 +729,49 @@ EOF
 
 # --------------------------------------------------------------- main --
 start_service() {
-	local SEED_ID
+	local SEED_ID prev_id
+	if [ -e "$RESIZE_REBOOT_FLAG" ]; then
+		logger -t "$PROG" "root resize reboot pending — skip this boot"
+		return 0
+	fi
 	load_libs || {
 		logger -t "$PROG" "FATAL: нет lib в $WRT_LIBDIR — abort (сеть не трогаем)"
 		mark_cloudinit_ready
 		return 1
 	}
 
-	mount_cidata || { logger -t "$PROG" "cidata not found – skip"; mark_cloudinit_ready; return 0; }
-
-	[ -f "$CIDATA/meta-data" ] && \
-		logger -t "$PROG" "instance-id: $(get_seed_instance_id "$CIDATA/meta-data")"
+	if ! mount_cidata; then
+		logger -t "$PROG" "trusted cidata not found — skip"
+		# Скрипт, положенный в образ при деплое (bisquite + virt-customize),
+		# от сида не зависит и выполняется и без него.
+		run_firstboot_commands
+		mark_cloudinit_ready
+		return 0
+	fi
 
 	SEED_ID=$(get_seed_instance_id "$CIDATA/meta-data")
 	: "${SEED_ID:=nocloud}"
+	logger -t "$PROG" "instance-id: $SEED_ID"
 
 	if already_provisioned "$SEED_ID"; then
 		logger -t "$PROG" "instance '$SEED_ID' already provisioned — per-boot only"
+		run_firstboot_commands
 		mark_cloudinit_ready
 		umount_cidata
 		return 0
 	fi
 
-	logger -t "$PROG" "provisioning instance '$SEED_ID'"
+	prev_id=$(provisioned_instance_id)
+	if [ -n "$prev_id" ] && seed_dev_removable "$SEED_DEV" && \
+	   [ "$(uci -q get wrt_cloudinit.main.allow_removable_reprovision)" != 1 ]; then
+		logger -t "$PROG" "seed on removable $SEED_DEV has new instance '$SEED_ID' (was '$prev_id'): reprovision refused, set wrt_cloudinit.main.allow_removable_reprovision=1 to allow"
+		run_firstboot_commands
+		mark_cloudinit_ready
+		umount_cidata
+		return 0
+	fi
+
+	logger -t "$PROG" "provisioning instance '$SEED_ID' from $SEED_DEV ($SEED_CLASS)"
 	apply_user_data
 	ensure_root_rpcd_login
 	if apply_network_config; then

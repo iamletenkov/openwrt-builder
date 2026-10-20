@@ -1,0 +1,14 @@
+#cloud-config
+hostname: wrt-pve
+manage_etc_hosts: true
+fqdn: wrt-pve.example
+user: openwrt
+password: $5$abcdefgh$0123456789abcdefghijklmnopqrstuvwxyzABCDE
+ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaPVE one@pve
+  - ssh-rsa AAAAB3NzaPVE two@pve
+chpasswd:
+  expire: False
+users:
+  - default
+package_upgrade: false
