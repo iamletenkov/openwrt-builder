@@ -114,19 +114,48 @@ for k in "$KEYS_DIR"/*.pem; do
 done
 shopt -u nullglob
 
-# ---------- 3. Локальные .apk (по URL) ----------
+# ---------- 3. Локальные .apk (по URL, с пином sha256) ----------
 # Кладутся в packages/ ImageBuilder'а: он сам строит индекс и подписывает его
 # локальным ключом сборки (публичная часть попадает в образ, /etc/apk/keys).
-# Строка: <url> [sha256].
-while read -r url sum _; do
+# --allow-untrusted у ImageBuilder'а действует только на этот каталог —
+# доверие файлам здесь даёт обязательный sha256; подписи фидов проверяются.
+# Списки: общий local-packages.txt и local-packages-<target>-<subtarget>.txt.
+# Строка: <url> <sha256>.
+LOCAL_TS_FILE="${CONFIG_DIR}/local-packages-${TS}.txt"
+LOCAL_MARK="$IB_DIR/packages/.local-packages"
+IB_APK="$IB_DIR/staging_dir/host/bin/apk"
+[[ -x "$IB_APK" ]] || { echo "→ в ImageBuilder нет $IB_APK" >&2; exit 1; }
+# Пакеты прошлых сборок из кеша убираются: смена пина не оставляет две версии.
+if [[ -f "$LOCAL_MARK" ]]; then
+  while IFS= read -r old; do
+    [[ "$old" == *.apk && "$old" != */* ]] && rm -f "$IB_DIR/packages/$old"
+  done < "$LOCAL_MARK"
+fi
+: > "$LOCAL_MARK"
+while read -r url sum extra; do
   name=$(basename "$url")
-  [[ "$name" == *.apk ]] || { echo "→ local-packages: ожидается .apk: $url" >&2; exit 1; }
+  [[ "$url" == https://* && "$name" == *.apk && "$name" =~ ^[A-Za-z0-9._+-]+$ ]] || {
+    echo "→ local-packages: ожидается https://…/<имя>.apk: $url" >&2; exit 1; }
+  [[ "${sum:-}" =~ ^[0-9a-f]{64}$ && -z "${extra:-}" ]] || {
+    echo "→ local-packages: после URL нужен sha256 (64 hex): $url" >&2; exit 1; }
   echo "   • локальный пакет: $name"
-  fetch "$url" "$IB_DIR/packages/$name"
-  if [[ -n "${sum:-}" ]]; then
-    echo "$sum  $IB_DIR/packages/$name" | sha256sum -c --quiet - || { echo "→ sha256 не совпал: $name" >&2; exit 1; }
-  fi
-done < <(read_list "$LOCAL_PKG_FILE")
+  fetch "$url" "$IB_DIR/packages/$name.part"
+  echo "$sum  $IB_DIR/packages/$name.part" | sha256sum -c --quiet - || {
+    rm -f "$IB_DIR/packages/$name.part"; echo "→ sha256 не совпал: $name" >&2; exit 1; }
+  # Локальный репозиторий apk ищет файл строго как <имя>-<версия>.apk, а
+  # релизы на GitHub называют файлы по-своему: имя берётся из метаданных.
+  meta=$("$IB_APK" adbdump "$IB_DIR/packages/$name.part" | awk '
+    /^info:/ { i = 1; next } /^[^ ]/ { i = 0 }
+    i && $1 == "name:" && !n { n = $2 } i && $1 == "version:" && !v { v = $2 }
+    END { if (n != "" && v != "") print n "-" v ".apk" }')
+  [[ "$meta" =~ ^[A-Za-z0-9._+~-]+\.apk$ ]] || {
+    rm -f "$IB_DIR/packages/$name.part"; echo "→ не прочитаны имя и версия пакета: $name" >&2; exit 1; }
+  mv "$IB_DIR/packages/$name.part" "$IB_DIR/packages/$meta"
+  [[ "$meta" == "$name" ]] || echo "     → $meta"
+  echo "$meta" >> "$LOCAL_MARK"
+done < <(read_list "$LOCAL_PKG_FILE"; read_list "$LOCAL_TS_FILE")
+# Индекс packages/ строится заново, если в каталоге есть файлы новее него.
+rm -f "$IB_DIR/packages/packages.adb"
 
 echo "──────── repositories ────────"
 cat "$IB_DIR/repositories"
@@ -157,6 +186,15 @@ make -C "$IB_DIR" -j"$JOBS" image \
      EXTRA_IMAGE_NAME="custom" \
      FILES="$STAGE" \
      BIN_DIR="$OUT_DIR"
+
+# ---------- 6a. Манифест: всё запрошенное попало в образ ----------
+MANIFEST=""
+shopt -s nullglob
+for f in "$OUT_DIR"/*.manifest; do MANIFEST=$f; break; done
+shopt -u nullglob
+[[ -n "$MANIFEST" ]] || { echo "→ ImageBuilder не оставил .manifest в $OUT_DIR" >&2; exit 1; }
+# shellcheck disable=SC2086 # PKGS — список через пробел
+"$(dirname "$0")/check-manifest.sh" "$MANIFEST" $PKGS
 
 # ---------- 7. Пересборка ext4 корня через mke2fs ----------
 # make_ext4fs, которым ImageBuilder делает ext4, оставляет ФС, которую ядро

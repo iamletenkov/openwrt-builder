@@ -16,6 +16,19 @@ Docker. В образ встроены аналог cloud-init (`wrt.cloudinit`)
 Брать **ext4**-образы: только у них корень растёт онлайн. У squashfs overlay
 на f2fs онлайн не растёт.
 
+## Сторонние пакеты
+
+| Пакеты | Версия | Откуда |
+|---|---|---|
+| `kmod-amneziawg`, `amneziawg-tools`, `luci-proto-amneziawg` | 3.1.20260906 / 3.1.20260812 / 3.1.0 | [Slava-Shchipunov/awg-openwrt](https://github.com/Slava-Shchipunov/awg-openwrt) `v25.12.6` — SDK 25.12.6 из исходников amnezia-vpn, отдельно под каждый таргет |
+| `podkop`, `luci-app-podkop` | 0.7.24 | [itdoginfo/podkop](https://github.com/itdoginfo/podkop) (зависимости, в т. ч. `sing-box`, — из официальных фидов) |
+| `luci-theme-argon` | 3.0.0 | [jerrykuku/luci-theme-argon](https://github.com/jerrykuku/luci-theme-argon) (настройки темы встроены) |
+
+`kmod-amneziawg` зависит от `kernel=<версия>~<vermagic>` конкретного релиза и
+таргета: при смене `OPENWRT_RELEASE` пины AmneziaWG обновляются вместе с ним,
+иначе сборка упадёт на разрешении зависимостей. Тема по умолчанию прежняя,
+Argon выбирается в LuCI (System → System → Language and Style).
+
 ## Сборка
 
 ```bash
@@ -23,7 +36,7 @@ make build                                                   # x86-64, 25.12.6
 make build TARGET=armsr SUBTARGET=armv8
 make build TARGET=bcm27xx SUBTARGET=bcm2711 PROFILE=rpi-4
 make build OPENWRT_RELEASE=25.12.6 ROOTFS_SIZE=2048 JOBS=6
-make test                                                    # тесты скриптов образа
+make test                                                    # тесты скриптов образа и пинов пакетов
 ```
 
 Артефакты — в `output/<релиз>/<target>-<subtarget>/`, ImageBuilder кешируется в
@@ -46,7 +59,12 @@ actionlint и сборка всех таргетов без релиза.
   `config/packages-<target>-<subtarget>.txt` — добавки для таргета.
 - `config/feeds.txt` — доп. apk-фиды: URL на `packages.adb`; ключ фида (`*.pem`)
   — в `config/keys/`. Проверка подписей не отключается.
-- `config/local-packages.txt` — сторонние `.apk` по URL (с sha256).
+- `config/local-packages.txt` (общие) и `config/local-packages-<target>-<subtarget>.txt`
+  (под архитектуру и ядро) — сторонние `.apk`: строка `<URL фиксированного
+  релиза> <sha256>`, sha256 обязателен. Файлы кладутся в локальный репозиторий
+  ImageBuilder'а (индекс подписывается его ключом сборки); подписи
+  официальных фидов проверяются как обычно. После сборки
+  `builder/check-manifest.sh` сверяет манифест образа со списком пакетов.
 - `overlay/` — файлы образа из репозитория (cloud-init, ресайз); `files/` —
   свой overlay (gitignored), кладётся поверх.
 

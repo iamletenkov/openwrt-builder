@@ -11,5 +11,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /work
 
-COPY build-image.sh /work/build-image.sh
-RUN chmod +x /work/build-image.sh
+COPY build-image.sh check-manifest.sh /work/
+RUN chmod +x /work/build-image.sh /work/check-manifest.sh

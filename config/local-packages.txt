@@ -1,5 +1,19 @@
-# Сторонние .apk, которых нет во фидах (например, kmod-* под конкретное ядро).
-# Формат строки: <URL .apk> [sha256]. Файлы кладутся в packages/ ImageBuilder'а,
-# он сам строит индекс и подписывает его локальным ключом сборки.
-# Имена пакетов добавьте в packages.txt.
-# ⚠ kmod-* обязаны совпадать с ядром релиза OPENWRT_RELEASE и таргетом.
+# Сторонние .apk, которых нет в официальных фидах. Общие для всех таргетов
+# (noarch); пакеты под конкретную архитектуру и ядро — в
+# config/local-packages-<target>-<subtarget>.txt.
+#
+# Формат строки: <URL .apk> <sha256>. sha256 обязателен, URL — на
+# фиксированный релиз (не latest). Файлы кладутся в packages/ ImageBuilder'а:
+# он строит из них локальный индекс и подписывает его своим ключом сборки.
+# Проверка подписей официальных фидов при этом не отключается: доверие этим
+# файлам даёт пин sha256. Имена пакетов — в packages.txt.
+
+# --- Podkop 0.7.24 — выборочная маршрутизация (https://github.com/itdoginfo/podkop)
+# зависимости из официальных фидов 25.12: sing-box (>= 1.12), jq, curl,
+# bind-dig, coreutils-base64, kmod-nft-tproxy
+https://github.com/itdoginfo/podkop/releases/download/0.7.24/podkop-0.7.24-r1.apk a444a784a7dc22b2ba17336b773f75b27861daf3fb358fea21b31935a975318e
+https://github.com/itdoginfo/podkop/releases/download/0.7.24/luci-app-podkop-0.7.24-r1.apk 96d662b2f19e514e3486e9cddf545af1ce104d518884e3c61e8f4030c6f52746
+
+# --- Тема LuCI Argon 3.0.0 (https://github.com/jerrykuku/luci-theme-argon)
+# настройки темы встроены в неё; luci-app-argon-config 3.x — пустая заглушка
+https://github.com/jerrykuku/luci-theme-argon/releases/download/v3.0.0/luci-theme-argon-3.0.0-r2.apk d21fe8574183e4d78b6347431b5e0a4e48666453435b5d07d2ca44de2b491654

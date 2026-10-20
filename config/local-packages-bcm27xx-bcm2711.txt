@@ -1,0 +1,10 @@
+# Сторонние .apk только для bcm27xx/bcm2711 (формат — см. local-packages.txt).
+#
+# AmneziaWG под OpenWrt 25.12.6: сборка SDK релиза из исходников
+# amnezia-vpn/amneziawg-linux-kernel-module и amneziawg-tools
+# (https://github.com/Slava-Shchipunov/awg-openwrt, релиз v25.12.6).
+# ⚠ kmod-amneziawg зависит от kernel=<версия>~<vermagic> ровно этого релиза
+#   и таргета: при смене OPENWRT_RELEASE пины меняются вместе с ним.
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.6/kmod-amneziawg_v25.12.6_aarch64_cortex-a72_bcm27xx_bcm2711.apk f0c68f1f6d0a7e31d452bd814aa7022f5515cc9b2e428b57bd7a6ae61a5e8757
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.6/amneziawg-tools_v25.12.6_aarch64_cortex-a72_bcm27xx_bcm2711.apk 19ef1fe45d264a25834e0746e51607fc5f352bcbf47ff92f2d97d283e82de369
+https://github.com/Slava-Shchipunov/awg-openwrt/releases/download/v25.12.6/luci-proto-amneziawg_v25.12.6_aarch64_cortex-a72_bcm27xx_bcm2711.apk 1c98e821b5a133d374aa685a70c233170a4e5eab6da49d5a6c1a94f9f423c0c8
