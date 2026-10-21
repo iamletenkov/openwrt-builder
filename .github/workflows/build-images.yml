@@ -103,8 +103,34 @@ jobs:
           path: output/${{ env.OPENWRT_RELEASE }}/${{ matrix.target }}-${{ matrix.subtarget }}/*
           if-no-files-found: error
 
-  release:
+  # Один общий SHA256SUMS по файлам всех таргетов матрицы (формат sha256sum).
+  # Отдельным job'ом после сборки: ветки матрицы не знают файлов друг друга.
+  # Проверка: sha256sum -c SHA256SUMS --ignore-missing.
+  checksums:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: SHA256SUMS по всем файлам
+        working-directory: dist
+        run: |
+          export LC_ALL=C
+          rm -f SHA256SUMS
+          sha256sum -- * > ../SHA256SUMS
+          cat ../SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: SHA256SUMS
+          path: SHA256SUMS
+          if-no-files-found: error
+
+  release:
+    needs: [build, checksums]
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
@@ -114,6 +140,10 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: SHA256SUMS сходится с файлами релиза
+        working-directory: dist
+        run: sha256sum -c --quiet SHA256SUMS
 
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:

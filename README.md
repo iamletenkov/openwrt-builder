@@ -16,6 +16,15 @@ Docker. В образ встроены аналог cloud-init (`wrt.cloudinit`)
 Брать **ext4**-образы: только у них корень растёт онлайн. У squashfs overlay
 на f2fs онлайн не растёт.
 
+У каждого релиза есть общий `SHA256SUMS` по файлам всех таргетов. Проверка
+скачанного образа:
+
+```bash
+gh release download v0.3.0 -R iamletenkov/openwrt-builder \
+  -p '*x86-64-generic-ext4-combined-efi.qcow2' -p SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
 ## Сторонние пакеты
 
 | Пакеты | Версия | Откуда |
