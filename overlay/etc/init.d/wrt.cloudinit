@@ -551,23 +551,18 @@ ensure_uhttpd_ready() {
 	fi
 }
 
-# --------------------------- purge helpers ------------------------------
-purge_package() {                # $1 = network | dhcp | firewall
-	uci -q show "$1" | cut -d'.' -f2 | cut -d'=' -f1 | \
-	while read -r s; do uci -q delete "$1.$s"; done
-	uci commit "$1"
-}
-
 # ------------------------------------------------- net-config -----------
-apply_network_config() {
-	local nf="$CIDATA/network-config"
-	[ -f "$nf" ] || return 0
+# write_network_uci → записать сеть, dhcp и firewall сида в uci (с commit),
+# ничего не перезапуская. Удаляются и пишутся заново только свои секции
+# (lib/owned.sh): интерфейсы и зоны других программ — awg0, wg*, podkop —
+# переживают провижн нового instance-id. Код 1 — сид невалиден, uci не тронут.
+write_network_uci() {
+	local nf="$CIDATA/network-config" dm
 	# Валидация тоже по обеим версиям: v2 приезжает от `bs device write`.
 	if ! parse_netcfg_any "$nf" | grep -q '^[^|][^|]*|'; then
 		logger -t "$PROG" "network-config невалиден (нет WAN) — пропуск, текущая сеть сохранена"
 		return 1
 	fi
-	logger -t "$PROG" "applying network-config"
 
 	# ---------- DNS ---------------------------------------------------
 	IFS='|' read -r DNS SEARCH <<EOF
@@ -577,17 +572,21 @@ EOF
 	# DNS — только через UCI (network.wan.dns, dhcp.domain): /etc/resolv.conf
 	# в OpenWrt — ссылка в tmpfs, её переписывает dnsmasq.
 
-	# ---------- clean network/dhcp -----------------------------------
-	purge_package network
-	purge_package dhcp
+	# ---------- свои секции network/dhcp — заново ---------------------
+	purge_owned network
+	purge_owned dhcp
 
-	# dnsmasq base section (обязательно)
-	uci add dhcp dnsmasq >/dev/null
-	uci set dhcp.@dnsmasq[0].domainneeded='1'
-	uci set dhcp.@dnsmasq[0].authoritative='1'
-	uci set dhcp.@dnsmasq[0].localservice='1'
-	uci set dhcp.@dnsmasq[0].rebind_protection='1'
-	[ -n "$SEARCH" ] && uci set dhcp.@dnsmasq[0].domain="$SEARCH"
+	# dnsmasq не пересоздаётся: в нём настройки других программ (podkop).
+	dm=$(dnsmasq_section)
+	if [ -z "$dm" ]; then
+		dm=wrt_dnsmasq
+		uci set dhcp."$dm"=dnsmasq
+	fi
+	uci set dhcp."$dm".domainneeded='1'
+	uci set dhcp."$dm".authoritative='1'
+	uci set dhcp."$dm".localservice='1'
+	uci set dhcp."$dm".rebind_protection='1'
+	[ -n "$SEARCH" ] && uci set dhcp."$dm".domain="$SEARCH"
 
 	uci set network.loopback=interface
 	uci set network.loopback.device='lo'
@@ -659,56 +658,57 @@ EOF
 	uci commit network
 	uci commit dhcp
 
-	# ---------- firewall (reset) -------------------------------------
-	purge_package firewall
+	# ---------- firewall: свои секции — заново ------------------------
+	purge_owned firewall
 
 	# Прежде WAN был открыт целиком (input ACCEPT): наружу смотрели DNS
 	# dnsmasq, rpcd и всё, что слушает порт. Теперь — REJECT и явные
 	# разрешения: SSH и LuCI (доступ к машине по WAN — исходный замысел),
-	# ICMP и продление DHCP.
-	uci add firewall defaults >/dev/null
-	uci set firewall.@defaults[0].input='REJECT'
-	uci set firewall.@defaults[0].output='ACCEPT'
-	uci set firewall.@defaults[0].forward='REJECT'
-	uci set firewall.@defaults[0].synflood_protect='1'
+	# ICMP и продление DHCP. Все секции именованные (wrt_*): по имени их
+	# и находит purge_owned при следующем провижне.
+	uci set firewall.wrt_defaults=defaults
+	uci set firewall.wrt_defaults.input='REJECT'
+	uci set firewall.wrt_defaults.output='ACCEPT'
+	uci set firewall.wrt_defaults.forward='REJECT'
+	uci set firewall.wrt_defaults.synflood_protect='1'
 
 	# ---- LAN zone ----------------------------------------------------
-	uci add firewall zone >/dev/null
-	uci set firewall.@zone[-1].name='lan'
-	uci set firewall.@zone[-1].input='ACCEPT'
-	uci set firewall.@zone[-1].output='ACCEPT'
-	uci set firewall.@zone[-1].forward='ACCEPT'
+	uci set firewall.wrt_lan=zone
+	uci set firewall.wrt_lan.name='lan'
+	uci set firewall.wrt_lan.input='ACCEPT'
+	uci set firewall.wrt_lan.output='ACCEPT'
+	uci set firewall.wrt_lan.forward='ACCEPT'
 	for d in $LAN_DEVS; do
-		uci add_list firewall.@zone[-1].device="$d"
+		uci add_list firewall.wrt_lan.device="$d"
 	done
 
 	# ---- WAN zone ----------------------------------------------------
-	uci add firewall zone >/dev/null
-	uci set firewall.@zone[-1].name='wan'
-	uci set firewall.@zone[-1].input='REJECT'
-	uci set firewall.@zone[-1].output='ACCEPT'
-	uci set firewall.@zone[-1].forward='REJECT'
-	uci add_list firewall.@zone[-1].network='wan'
-	uci set firewall.@zone[-1].masq='1'
-	uci set firewall.@zone[-1].mtu_fix='1'
+	uci set firewall.wrt_wan=zone
+	uci set firewall.wrt_wan.name='wan'
+	uci set firewall.wrt_wan.input='REJECT'
+	uci set firewall.wrt_wan.output='ACCEPT'
+	uci set firewall.wrt_wan.forward='REJECT'
+	uci add_list firewall.wrt_wan.network='wan'
+	uci set firewall.wrt_wan.masq='1'
+	uci set firewall.wrt_wan.mtu_fix='1'
 
 	# Без forwarding LAN-клиенты не выходили в WAN вовсе.
-	uci add firewall forwarding >/dev/null
-	uci set firewall.@forwarding[-1].src='lan'
-	uci set firewall.@forwarding[-1].dest='wan'
+	uci set firewall.wrt_lan_wan=forwarding
+	uci set firewall.wrt_lan_wan.src='lan'
+	uci set firewall.wrt_lan_wan.dest='wan'
 
-	fw_allow_wan() { # name proto port [family]
-		uci add firewall rule >/dev/null
-		uci set firewall.@rule[-1].name="$1"
-		uci set firewall.@rule[-1].src='wan'
-		uci set firewall.@rule[-1].proto="$2"
-		[ -n "$3" ] && uci set firewall.@rule[-1].dest_port="$3"
-		[ -n "$4" ] && uci set firewall.@rule[-1].family="$4"
-		uci set firewall.@rule[-1].target='ACCEPT'
+	fw_allow_wan() { # section name proto port [family]
+		uci set firewall."$1"=rule
+		uci set firewall."$1".name="$2"
+		uci set firewall."$1".src='wan'
+		uci set firewall."$1".proto="$3"
+		[ -n "${4:-}" ] && uci set firewall."$1".dest_port="$4"
+		[ -n "${5:-}" ] && uci set firewall."$1".family="$5"
+		uci set firewall."$1".target='ACCEPT'
 	}
-	fw_allow_wan Allow-DHCP-Renew udp 68 ipv4
-	fw_allow_wan Allow-Ping icmp '' ipv4
-	fw_allow_wan Allow-SSH-from-WAN tcp 22
+	fw_allow_wan wrt_dhcp_renew Allow-DHCP-Renew udp 68 ipv4
+	fw_allow_wan wrt_ping Allow-Ping icmp '' ipv4
+	fw_allow_wan wrt_ssh_wan Allow-SSH-from-WAN tcp 22
 	# LuCI с WAN — именованное правило: пока пароль root пуст, оно выключено
 	# (lib/luci.sh), иначе rpcd пускал бы с WAN под root без пароля.
 	uci set firewall.wrt_luci_wan=rule
@@ -721,6 +721,14 @@ EOF
 		logger -t "$PROG" "root has no password: LuCI closed on WAN until it is set"
 
 	uci commit firewall
+	return 0
+}
+
+apply_network_config() {
+	local nf="$CIDATA/network-config"
+	[ -f "$nf" ] || return 0
+	logger -t "$PROG" "applying network-config"
+	write_network_uci || return 1
 
 	# ---------- uhttpd -----------------------------------------------
 	uci -q delete uhttpd.main.listen_http

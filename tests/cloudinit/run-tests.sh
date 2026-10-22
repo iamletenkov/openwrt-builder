@@ -377,4 +377,121 @@ esac
 rm -rf "$LT"
 unset WRT_SHADOW
 
+# --- write_network_uci: чужие секции переживают провижн ----------------------
+# Раньше провижн сида (первая загрузка или новый instance-id) стирал
+# /etc/config/network, dhcp и firewall целиком: интерфейс awg0 расширения
+# amneziawg, его пир, зона VPN и forwarding в неё пропадали. Теперь
+# wrt.cloudinit удаляет только свои секции (lib/owned.sh) и пишет их заново.
+# Фикстура uci-foreign — вывод настоящего `uci -X show` с корневой ФС
+# релиза: стоковые секции (сеть x86 по board.d, firewall и dhcp пакетов) плюс
+# чужие — awg0, awg0_peer, анонимный wireguard_wg0, зона awg, forwarding
+# lan→awg, правило Allow-AWG-Port, include podkop и сервер dnsmasq.
+# uci подменяется эмулятором поверх файлов «uci -X show» в $UCI_DIR.
+UT=$(mktemp -d)
+UCI_DIR="$UT/uci"
+uci() {
+	while :; do case "$1" in -q|-X) shift ;; *) break ;; esac; done
+	_c=$1; shift
+	case "$_c" in
+	show) cat "$UCI_DIR/$1" 2>/dev/null ;;
+	get)
+		awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); gsub(/\047/, "", v); print v; f = 1 } END { exit !f }' "$UCI_DIR/${1%%.*}" 2>/dev/null ;;
+	set|add_list)
+		_p=${1%%=*} _v=${1#*=} _f="$UCI_DIR/${1%%.*}"
+		touch "$_f"
+		case "${_p#*.}" in *.*) _v="'$_v'" ;; esac
+		awk -v k="$_p" -v v="$_v" -v add="$([ "$_c" = add_list ] && echo 1)" '
+			index($0, k "=") == 1 { if (add) print $0 " " v; else print k "=" v; f = 1; next }
+			{ print }
+			END { if (!f) print k "=" v }' "$_f" > "$_f.t" && mv "$_f.t" "$_f" ;;
+	delete)
+		_f="$UCI_DIR/${1%%.*}"
+		[ -f "$_f" ] || return 1
+		awk -v k="$1" 'index($0, k "=") != 1 && index($0, k ".") != 1' "$_f" > "$_f.t" && mv "$_f.t" "$_f" ;;
+	commit) : ;;
+	*) echo "uci-emu: нет команды $_c" >&2; return 1 ;;
+	esac
+}
+# prov FIXTURE: провижн сида фикстуры поверх текущего $UCI_DIR (подоболочка:
+# функции init-скрипта не протекают в харнесс).
+prov() (
+	# shellcheck disable=SC1090
+	. "$WRT"
+	CIDATA="$FIX/$1"
+	logger() { :; }
+	write_network_uci
+)
+# sec_of PKG TYPE OPT VAL: имена секций типа TYPE с OPT=VAL (по одной в строке).
+sec_of() {
+	awk -v p="$1" -v t="$2" -v o="$3" -v v="'$4'" -F= '
+		{ split($1, k, ".") }
+		k[1] == p && !k[3] && $2 == t { ty[k[2]] = 1 }
+		k[1] == p && k[3] == o && $2 == v { hit[k[2]] = 1 }
+		END { for (s in hit) if (s in ty) print s }' "$UCI_DIR/$1"
+}
+cnt() { sec_of "$@" | grep -c .; }
+mkdir -p "$UCI_DIR"
+cp "$FIX/uci-foreign/network" "$FIX/uci-foreign/firewall" "$FIX/uci-foreign/dhcp" "$UCI_DIR/"
+WRT_SHADOW="$UT/shadow"
+printf 'root:$6$salt$hash:20000:0:99999:7:::\n' > "$WRT_SHADOW"
+
+if prov multi-lan; then pass "write_network_uci: провижн multi-lan"; else die "write_network_uci: провижн multi-lan"; fi
+# чужое — на месте
+assert_eq "network: чужой интерфейс awg0 сохранён" "amneziawg" "$(uci -q get network.awg0.proto)"
+assert_eq "network: пир awg0_peer сохранён" "peerkey" "$(uci -q get network.awg0_peer.public_key)"
+assert_eq "network: анонимный wireguard_wg0 сохранён" "1" "$(cnt network wireguard_wg0 description manual)"
+assert_eq "network: globals сохранены" "fd12:3456:789a::/48" "$(uci -q get network.globals.ula_prefix)"
+assert_eq "firewall: чужая зона awg сохранена" "1" "$(cnt firewall zone name awg)"
+assert_eq "firewall: forwarding lan→awg сохранён" "1" "$(cnt firewall forwarding dest awg)"
+assert_eq "firewall: чужое правило сохранено" "1" "$(cnt firewall rule name Allow-AWG-Port)"
+assert_eq "firewall: include podkop сохранён" "/usr/lib/podkop/fw.sh" "$(uci -q get firewall.podkop.path)"
+assert_eq "dhcp: настройки dnsmasq (сервер podkop) сохранены" "127.0.0.42" "$(uci -q get dhcp.cfg01411c.server)"
+assert_eq "dhcp: секция dnsmasq одна" "1" "$(grep -c '=dnsmasq$' "$UCI_DIR/dhcp")"
+# своё — переписано по сиду
+assert_eq "network: wan на eth0 по сиду" "eth0" "$(uci -q get network.wan.device)"
+assert_eq "network: lan на мосту br-lan" "br-lan" "$(uci -q get network.lan.device)"
+assert_eq "network: lan1 по сиду" "192.168.52.1" "$(uci -q get network.lan1.ipaddr)"
+assert_eq "network: стоковый wan6 на LAN-порту удалён" "" "$(uci -q get network.wan6)"
+assert_eq "network: мост br-lan один, порт по сиду" "eth1" \
+"$(for s in $(sec_of network device name br-lan); do uci -q get "network.$s.ports"; done)"
+assert_eq "firewall: defaults одна" "1" "$(grep -c '=defaults$' "$UCI_DIR/firewall")"
+assert_eq "firewall: зона lan одна" "1" "$(cnt firewall zone name lan)"
+assert_eq "firewall: зона wan одна" "1" "$(cnt firewall zone name wan)"
+assert_eq "firewall: forwarding lan→wan один" "1" "$(cnt firewall forwarding dest wan)"
+# Точный набор правил с WAN: стоковые сняты, свои — по одному, чужое — на месте.
+assert_eq "firewall: правила с WAN — ровно свои и чужое" \
+"Allow-AWG-Port
+Allow-DHCP-Renew
+Allow-LuCI-from-WAN
+Allow-Ping
+Allow-SSH-from-WAN" \
+"$(for s in $(sec_of firewall rule src wan); do uci -q get "firewall.$s.name"; done | sort)"
+assert_eq "firewall: WAN — input REJECT" "REJECT" \
+"$(for s in $(sec_of firewall zone name wan); do uci -q get "firewall.$s.input"; done)"
+assert_eq "firewall: defaults — input REJECT" "REJECT" \
+"$(for s in $(sed -n 's/^firewall\.\([^.=]*\)=defaults$/\1/p' "$UCI_DIR/firewall"); do uci -q get "firewall.$s.input"; done)"
+assert_eq "firewall: SSH с WAN открыт" "1" "$(cnt firewall rule name Allow-SSH-from-WAN)"
+assert_eq "firewall: правило LuCI с WAN на месте" "rule" "$(uci -q get firewall.wrt_luci_wan)"
+
+# Повтор того же сида — тот же результат байт в байт, даже если своё
+# испортили руками: своё пересоздаётся, а не дописывается.
+for p in network firewall dhcp; do cp "$UCI_DIR/$p" "$UT/$p.1"; done
+uci set network.lan.ipaddr=10.9.9.9
+uci set network.wan.stale=1
+prov multi-lan >/dev/null
+same=1
+for p in network firewall dhcp; do cmp -s "$UCI_DIR/$p" "$UT/$p.1" || same=0; done
+assert_eq "write_network_uci: повторный провижн идемпотентен" "1" "$same"
+
+# Сид сменился (новый instance-id, LAN стало меньше): lan1 и его мост
+# уходят, чужое остаётся.
+prov wan-dhcp-lan-static >/dev/null
+assert_eq "новый сид: lan1 удалён" "" "$(uci -q get network.lan1)"
+assert_eq "новый сид: br-lan1 удалён" "0" "$(cnt network device name br-lan1)"
+assert_eq "новый сид: dhcp lan1 удалён" "" "$(uci -q get dhcp.lan1)"
+assert_eq "новый сид: awg0 на месте" "amneziawg" "$(uci -q get network.awg0.proto)"
+assert_eq "новый сид: зона awg на месте" "1" "$(cnt firewall zone name awg)"
+rm -rf "$UT"
+unset WRT_SHADOW UCI_DIR
+
 [ "$fail" = 0 ] && { echo "ALL PASS"; exit 0; } || { echo "FAILURES"; exit 1; }

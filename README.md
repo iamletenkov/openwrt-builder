@@ -20,7 +20,7 @@ Docker. В образ встроены аналог cloud-init (`wrt.cloudinit`)
 скачанного образа:
 
 ```bash
-gh release download v0.3.0 -R iamletenkov/openwrt-builder \
+gh release download v0.3.1 -R iamletenkov/openwrt-builder \
   -p '*x86-64-generic-ext4-combined-efi.qcow2' -p SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 ```
@@ -93,6 +93,19 @@ ImageBuilder пересобирается `mke2fs -d` (тот же UUID и ме�
    root (`chpasswd`), `runcmd`, сеть (v1 Proxmox и v2): первый NIC — WAN,
    остальные — LAN-мосты с DHCP-сервером и NAT. На WAN открыты только SSH,
    LuCI (80/443), ping и продление DHCP.
+
+**Чужие секции переживают провижн.** При провижне (первая загрузка или новый
+`instance-id`) `wrt.cloudinit` удаляет и пишет заново только свои секции
+`/etc/config/network`, `dhcp` и `firewall` (`lib/owned.sh`): интерфейсы
+`loopback`, `wan`, `wan6`, `lan*` и мосты `br-lan*`, секции `dhcp` `wan`/`lan*`,
+`defaults`, зоны `lan` и `wan`, forwarding между ними, стоковые правила OpenWrt
+и всё с именем `wrt_*`. Интерфейсы и зоны других программ — `awg0` и его пир,
+`wg*`, зона VPN и forwarding в неё, include podkop, настройки dnsmasq —
+остаются. Зоны `lan` и `wan` — свои целиком: добавленное в них руками сид
+перепишет, для VPN заводите отдельную зону. Чужие правила и пробросы портов
+тоже остаются — клон ВМ с новым `instance-id` их унаследует. Секция dnsmasq
+не пересоздаётся: стоковый `domain`/`local` (`lan`) остаётся, если в сиде нет
+`search`.
 
 **Откуда берётся сид.** Только CD-ROM гипервизора в ВМ (Proxmox
 `ide2: …:cloudinit,media=cdrom`, ISO с меткой `cidata`) или раздел `cidata`
