@@ -494,4 +494,74 @@ assert_eq "новый сид: зона awg на месте" "1" "$(cnt firewall 
 rm -rf "$UT"
 unset WRT_SHADOW UCI_DIR
 
+# --- 90-lan-dhcp-client: ВМ-образ без сида не раздаёт адреса -------------------
+# Стоковый OpenWrt поднимает LAN 192.168.1.1 с DHCP-сервером (dnsmasq) и RA
+# (odhcpd). Пока сид не найден — так было у armsr при приёмке, и так же у x86
+# без cloud-init диска, — ВМ раздаёт адреса в сеть, куда её включили. Образы
+# ВМ (x86/64, armsr/armv8) по умолчанию держат LAN DHCP-клиентом; RPi — стоковая.
+# Фикстура uci-stock — сеть одного-двух NIC по 99-default_network и dhcp после
+# 15_odhcpd: общая для x86 и armsr (у обоих board.d для ВМ ничего не задаёт).
+LD="$ROOT/etc/uci-defaults/90-lan-dhcp-client"
+UT=$(mktemp -d)
+UCI_DIR="$UT/uci"
+# lan_defaults TARGET: прогнать скрипт для DISTRIB_TARGET=TARGET поверх $UCI_DIR.
+lan_defaults() (
+	printf "DISTRIB_ID='OpenWrt'\nDISTRIB_TARGET='%s'\n" "$1" > "$UT/openwrt_release"
+	WRT_RELEASE_FILE="$UT/openwrt_release"
+	logger() { :; }
+	# shellcheck disable=SC1090
+	. "$LD"
+)
+stock() { rm -rf "$UCI_DIR"; mkdir -p "$UCI_DIR"; cp "$FIX/uci-stock/network" "$FIX/uci-stock/dhcp" "$UCI_DIR/"; }
+for tgt in x86/64 armsr/armv8; do
+	stock
+	if lan_defaults "$tgt"; then pass "$tgt: 90-lan-dhcp-client → код 0"; else die "$tgt: 90-lan-dhcp-client → код 0"; fi
+	assert_eq "$tgt: LAN — DHCP-клиент" "dhcp" "$(uci -q get network.lan.proto)"
+	assert_eq "$tgt: LAN без 192.168.1.1" "" "$(uci -q get network.lan.ipaddr)$(uci -q get network.lan.netmask)$(uci -q get network.lan.ip6assign)"
+	assert_eq "$tgt: LAN на мосту br-lan" "br-lan" "$(uci -q get network.lan.device)"
+	assert_eq "$tgt: dnsmasq на LAN не раздаёт адреса" "1" "$(uci -q get dhcp.lan.ignore)"
+	assert_eq "$tgt: odhcpd на LAN выключен (dhcpv4/dhcpv6/ra)" "disabled disabled disabled" \
+	"$(uci -q get dhcp.lan.dhcpv4) $(uci -q get dhcp.lan.dhcpv6) $(uci -q get dhcp.lan.ra)"
+	assert_eq "$tgt: WAN не тронут" "eth1 dhcp" "$(uci -q get network.wan.device) $(uci -q get network.wan.proto)"
+	cp "$UCI_DIR/network" "$UT/network.1"; cp "$UCI_DIR/dhcp" "$UT/dhcp.1"
+	lan_defaults "$tgt"
+	if cmp -s "$UCI_DIR/network" "$UT/network.1" && cmp -s "$UCI_DIR/dhcp" "$UT/dhcp.1"; then
+		pass "$tgt: повторный прогон ничего не меняет"
+	else
+		die "$tgt: повторный прогон ничего не меняет"
+	fi
+done
+# RPi — железо, первый вход по 192.168.1.1: стоковая сеть остаётся.
+for tgt in bcm27xx/bcm2711 bcm27xx/bcm2712; do
+	stock
+	lan_defaults "$tgt"
+	if cmp -s "$UCI_DIR/network" "$FIX/uci-stock/network" && cmp -s "$UCI_DIR/dhcp" "$FIX/uci-stock/dhcp"; then
+		pass "$tgt: стоковая сеть не тронута"
+	else
+		die "$tgt: стоковая сеть не тронута"
+	fi
+done
+# LAN, заданный своим overlay (files/), — не стоковый: не трогаем.
+stock
+uci set network.lan.ipaddr=10.0.0.1
+cp "$UCI_DIR/network" "$UT/network.own"
+lan_defaults armsr/armv8
+if cmp -s "$UCI_DIR/network" "$UT/network.own" && cmp -s "$UCI_DIR/dhcp" "$FIX/uci-stock/dhcp"; then
+	pass "свой LAN 10.0.0.1 не тронут"
+else
+	die "свой LAN 10.0.0.1 не тронут"
+fi
+# Сид со static LAN после дефолта: DHCP-сервер на LAN — по сиду, без ignore.
+stock
+lan_defaults armsr/armv8
+WRT_SHADOW="$UT/shadow"
+printf 'root:$6$salt$hash:20000:0:99999:7:::\n' > "$WRT_SHADOW"
+prov wan-dhcp-lan-static >/dev/null
+assert_eq "сид после дефолта: LAN static по сиду" "static 192.168.51.1" \
+"$(uci -q get network.lan.proto) $(uci -q get network.lan.ipaddr)"
+assert_eq "сид после дефолта: DHCP-сервер на LAN без ignore" "|10" \
+"$(uci -q get dhcp.lan.ignore)|$(uci -q get dhcp.lan.start)"
+rm -rf "$UT"
+unset WRT_SHADOW UCI_DIR
+
 [ "$fail" = 0 ] && { echo "ALL PASS"; exit 0; } || { echo "FAILURES"; exit 1; }

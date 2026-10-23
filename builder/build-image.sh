@@ -210,6 +210,18 @@ ROOTFS_TAR=""
 shopt -s nullglob
 for f in "$OUT_DIR"/*-rootfs.tar.gz; do ROOTFS_TAR=$f; break; done
 shopt -u nullglob
+
+# Образ ВМ без сида не должен раздавать адреса в LAN: 90-lan-dhcp-client
+# (overlay) делает стоковый LAN 192.168.1.1 DHCP-клиентом на x86 и armsr.
+case "$TARGET" in
+  x86|armsr)
+    [[ -n "$ROOTFS_TAR" ]] || { echo "→ нет rootfs.tar.gz — сетевой дефолт не проверить" >&2; exit 1; }
+    tar -tvzf "$ROOTFS_TAR" | awk '$1 ~ /^-..x/ && ($NF == "./etc/uci-defaults/90-lan-dhcp-client" ||
+      $NF == "etc/uci-defaults/90-lan-dhcp-client") { f = 1 } END { exit !f }' || {
+      echo "→ в образе $TS нет исполняемого /etc/uci-defaults/90-lan-dhcp-client" >&2; exit 1; }
+    echo "   • сетевой дефолт: LAN — DHCP-клиент (90-lan-dhcp-client)" ;;
+esac
+
 rebuild_ext4() { # <raw-образ ФС или диска> <смещение байт> <размер байт>
   local img=$1 off=$2 size=$3 part uuid
   part=$(mktemp "$CACHE_DIR/part.XXXXXX")
