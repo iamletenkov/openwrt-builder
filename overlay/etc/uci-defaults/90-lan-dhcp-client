@@ -1,0 +1,50 @@
+#!/bin/sh
+# LAN образа ВМ по умолчанию — DHCP-клиент, без раздачи адресов.
+#
+# Стоковый OpenWrt поднимает LAN 192.168.1.1 с DHCP-сервером dnsmasq и RA/DHCPv6
+# odhcpd. Сеть ВМ настраивает wrt.cloudinit (S47) по сиду NoCloud, но пока сида
+# нет или он не найден, ВМ, включённая в рабочую сеть, раздавала в неё адреса
+# 192.168.1.x — так вёл себя armsr/armv8 на приёмке, и так же x86/64 без
+# cloud-init диска. Теперь до сида LAN получает адрес по DHCP, а dnsmasq и
+# odhcpd на нём молчат; сид затем переписывает lan и dhcp.lan по-своему
+# (lib/owned.sh), static LAN из сида раздаёт адреса как раньше.
+#
+# Только образы ВМ: x86/* и armsr/*. RPi (bcm27xx) — железо, первый вход в
+# него — по 192.168.1.1, его сеть остаётся стоковой. Меняется только стоковый
+# LAN (static 192.168.1.1): LAN из своего overlay (files/) не трогается.
+# Идёт после 15_odhcpd, который включает на static LAN dhcpv4/dhcpv6/ra.
+
+TAG=lan-dhcp-client
+# uci-defaults идут раньше logd: пишем в кольцо ядра, как 70-rootpt-resize.
+log() { echo "<5>$TAG: $*" > /dev/kmsg 2>/dev/null || logger -t "$TAG" "$*"; }
+
+target=$(sed -n "s/^DISTRIB_TARGET=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "${WRT_RELEASE_FILE:-/etc/openwrt_release}" 2>/dev/null)
+case "$target" in
+	x86/*|armsr/*) ;;
+	*) exit 0 ;;
+esac
+
+[ "$(uci -q get network.lan.proto)" = static ] || exit 0
+case "$(uci -q get network.lan.ipaddr)" in
+	192.168.1.1|192.168.1.1/*) ;;
+	*) exit 0 ;;
+esac
+
+uci set network.lan.proto='dhcp'
+uci -q delete network.lan.ipaddr
+uci -q delete network.lan.netmask
+uci -q delete network.lan.ip6assign
+
+uci -q get dhcp.lan >/dev/null || {
+	uci set dhcp.lan=dhcp
+	uci set dhcp.lan.interface='lan'
+}
+uci set dhcp.lan.ignore='1'
+uci set dhcp.lan.dhcpv4='disabled'
+uci set dhcp.lan.dhcpv6='disabled'
+uci set dhcp.lan.ra='disabled'
+
+uci commit network
+uci commit dhcp
+log "$target: LAN is a DHCP client, no DHCP/RA served on LAN until a seed configures it"
+exit 0
