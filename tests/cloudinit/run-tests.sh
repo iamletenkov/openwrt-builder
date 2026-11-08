@@ -164,6 +164,119 @@ assert_eq "parse_runcmd: без runcmd → пусто" "" \
 assert_eq "parse_root_password: работает и на второй фикстуре" "0" \
 "$(parse_root_password "$BSWR/user-data" | grep -cv '^\$6\$')"
 
+# --- parse_runcmd: свёрнутые строки настоящего генератора ---------------------
+# Фикстура снята настоящим CloudInitGenerator bisquite 3.2.1 (README фикстуры):
+# yaml.dump с шириной 80 сворачивает длинные элементы. Раньше парсер брал только
+# строки с `-`: у строки подключения терялся хвост `URL=… WAIT=0` (агент ждал
+# сеть 600 с и держал загрузку), а строка стирания сида рвалась на две, и вторая
+# (`-d); …`) выдавалась за отдельную команду.
+BSWC="$FIX/bisquite-device-write-connect"
+RC_CODE=stc_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+RC_CONNECT="printf '%s' '$RC_CODE' | stvor-agent connect URL=https://stvor.example.test WAIT=0"
+# shellcheck disable=SC2016
+RC_CLEAN='seed=$(findfs LABEL=cidata 2>/dev/null || true); if [ -n "$seed" ]; then mnt=$(mktemp -d); if mount "$seed" "$mnt"; then rm -f "$mnt/user-data" "$mnt/meta-data" "$mnt/network-config"; umount "$mnt" && wipefs -a "$seed"; fi; rmdir "$mnt"; fi'
+assert_eq "parse_runcmd: свёрнутые строки генератора — три команды целиком" \
+"$RC_CONNECT
+touch /var/lib/cloud/instance/manual-clean
+$RC_CLEAN" \
+"$(parse_runcmd "$BSWC/user-data")"
+assert_eq "parse_runcmd: строка connect кончается на WAIT=0" "WAIT=0" \
+"$(parse_runcmd "$BSWC/user-data" | head -n 1 | awk '{ print $NF }')"
+assert_eq "parse_runcmd: у фикстуры генератора пропусков нет" "" \
+"$(parse_runcmd "$BSWC/user-data" skipped)"
+
+# Строка продолжения определяется отступом раньше, чем `-`: место сворачивания
+# зависит от длины домена и кода, и строка очистки сида может сломаться
+# прямо перед `-n`/`-f`/`-a`. Отступ больше, чем у `-` элемента, — продолжение.
+RT=$(mktemp -d)
+cat > "$RT/dash-cont" <<'EOF'
+#cloud-config
+runcmd:
+- seed=$(x); if [
+  -n "$seed" ]; then rm
+  -f "$seed/a"; wipefs
+  -a "$seed"; fi
+- -n starts the item itself
+- echo next
+growpart:
+  mode: auto
+EOF
+# shellcheck disable=SC2016
+assert_eq "parse_runcmd: продолжение с -n/-f/-a — часть элемента" \
+'seed=$(x); if [ -n "$seed" ]; then rm -f "$seed/a"; wipefs -a "$seed"; fi
+-n starts the item itself
+echo next' \
+"$(parse_runcmd "$RT/dash-cont")"
+
+# Элементы ниже — вывод того же yaml.dump (закавыченные свёрнутые строки:
+# одинарные кавычки ставятся из-за `: `, двойные — при default_style='"', с `\`
+# в конце строки и `\ ` в начале продолжения) плюс блочные `|`/`>-`, которые
+# не исполняются, а пропускаются: их содержимое в журнал не идёт.
+cat > "$RT/quoted" <<'EOF'
+#cloud-config
+runcmd:
+- 'echo ''it''''s'' key: value and a very long tail that goes past eighty columns
+  for sure, yes indeed ok'
+- 'short: x'
+- it's plain
+- "say \"hi\" and back\\slash \"q\" long long long long long long long long long long\
+  \ long text"
+- |
+  echo secret-in-block
+  echo two
+- >-
+  echo folded
+  block
+-
+  echo on-next-line
+- echo after-block
+growpart:
+  mode: auto
+EOF
+assert_eq "parse_runcmd: кавычки сняты, блочные пропущены" \
+"echo 'it''s' key: value and a very long tail that goes past eighty columns for sure, yes indeed ok
+short: x
+it's plain
+say \"hi\" and back\\slash \"q\" long long long long long long long long long long long text
+echo on-next-line
+echo after-block" \
+"$(parse_runcmd "$RT/quoted")"
+assert_eq "parse_runcmd skipped: два блочных элемента" "multiline
+multiline" \
+"$(parse_runcmd "$RT/quoted" skipped)"
+
+# Незакрытые кавычки и неподдержанные экранирования — пропуск, а не команда,
+# собранная не так, как её написал автор.
+cat > "$RT/bad" <<'EOF'
+runcmd:
+- 'unterminated
+- "tab\there"
+- 'odd''
+- echo ok
+EOF
+assert_eq "parse_runcmd: испорченные элементы не исполняются" "echo ok" \
+"$(parse_runcmd "$RT/bad")"
+assert_eq "parse_runcmd skipped: испорченные элементы" "malformed
+malformed
+malformed" \
+"$(parse_runcmd "$RT/bad" skipped)"
+
+# stage_runcmd: о пропуске — строка в журнал без содержимого элемента.
+got=$(
+	# shellcheck disable=SC1090
+	. "$WRT"
+	FIRSTBOOT_SCRIPT="$RT/firstboot.sh"
+	logger() { shift 2; printf '%s\n' "$*"; }
+	stage_runcmd "$RT/quoted"
+)
+assert_eq "stage_runcmd: пропуски в журнале без содержимого" \
+"multiline runcmd entry skipped
+multiline runcmd entry skipped
+staged 6 runcmd entries" "$got"
+assert_eq "stage_runcmd: в скрипте — разобранные команды" "7" \
+"$(grep -c . "$RT/firstboot.sh")"
+rm -rf "$RT"
+
 # --- merge_authorized_keys ---
 # Ключи записываются, а не дописываются: при повторном провижне (новый
 # instance-id) `>>` удваивал строки. Прогон именно повторный — один вызов
@@ -563,5 +676,121 @@ assert_eq "сид после дефолта: DHCP-сервер на LAN без i
 "$(uci -q get dhcp.lan.ignore)|$(uci -q get dhcp.lan.start)"
 rm -rf "$UT"
 unset WRT_SHADOW UCI_DIR
+
+# --- start_service: сид размонтирован до команд первой загрузки ---------------
+# /mnt/cidata смонтирован ro. Команда стирания сида монтирует то же устройство
+# на запись — ядро такой mount отвергает (EBUSY), `if mount …` молча
+# пропускает стирание, и сид с паролями и кодом подключения остаётся на
+# носителе. Поэтому сид размонтируется раньше команд, во всех ветках.
+# Подделки в PATH: mount отказывает, если устройство уже смонтировано, как ядро;
+# stvor-agent пишет в журнал событий аргументы и «code-ok» вместо кода.
+ST=$(mktemp -d)
+mkdir -p "$ST/bin"
+cat > "$ST/bin/mount" <<'EOF'
+#!/bin/sh
+mode=rw
+if [ "$1" = -o ]; then case "$2" in ro|ro,*) mode=ro ;; esac; shift 2; fi
+if grep -q "^$1 " "$FAKE_STATE" 2>/dev/null; then
+	echo "mount-busy $1" >> "$FAKE_EV"; echo "mount: $2: $1 already mounted" >&2; exit 32
+fi
+echo "$1 $2" >> "$FAKE_STATE"
+echo "mount-$mode $1" >> "$FAKE_EV"
+cp "$FAKE_SEED"/user-data "$FAKE_SEED"/meta-data "$FAKE_SEED"/network-config "$2"/
+EOF
+cat > "$ST/bin/umount" <<'EOF'
+#!/bin/sh
+grep -q " $1\$" "$FAKE_STATE" 2>/dev/null || { echo "umount: $1: not mounted" >&2; exit 32; }
+grep -v " $1\$" "$FAKE_STATE" > "$FAKE_STATE.t"; mv "$FAKE_STATE.t" "$FAKE_STATE"
+rm -f "$1/user-data" "$1/meta-data" "$1/network-config"
+echo umount >> "$FAKE_EV"
+EOF
+cat > "$ST/bin/findfs" <<'EOF'
+#!/bin/sh
+echo /dev/fake-seed
+EOF
+cat > "$ST/bin/wipefs" <<'EOF'
+#!/bin/sh
+echo "wipefs $*" >> "$FAKE_EV"
+EOF
+cat > "$ST/bin/stvor-agent" <<'EOF'
+#!/bin/sh
+code=$(cat)
+[ "$code" = "$FAKE_CODE" ] && ok=code-ok || ok=code-bad
+echo "stvor-agent $* $ok" >> "$FAKE_EV"
+EOF
+chmod +x "$ST/bin/"*
+# Сид фикстуры без `hostname:`: применение имени пишет в /proc/sys/kernel/hostname.
+mkdir -p "$ST/seed"
+cp "$BSWC/meta-data" "$BSWC/network-config" "$ST/seed/"
+grep -v '^hostname:' "$BSWC/user-data" > "$ST/seed/user-data"
+# run_boot BRANCH: один старт службы в подоболочке; BRANCH — provision |
+# per-boot | removable. Журнал logger — в $ST/log, события подделок — в $ST/ev.
+run_boot() (
+	# shellcheck disable=SC1090
+	. "$WRT"
+	PATH="$ST/bin:$PATH"
+	FAKE_EV="$ST/ev" FAKE_STATE="$ST/mounts" FAKE_SEED="$ST/seed" FAKE_CODE="$RC_CODE"
+	export FAKE_EV FAKE_STATE FAKE_SEED FAKE_CODE
+	CIDATA="$ST/cidata"
+	FIRSTBOOT_SCRIPT="$ST/firstboot.sh"
+	CLOUDINIT_READY_FLAG="$ST/ready"
+	RESIZE_REBOOT_FLAG="$ST/no-resize"
+	WRT_STATE_DIR="$ST/state"
+	logger() { shift 2; printf '%s\n' "$*" >> "$ST/log"; }
+	uci() { :; }
+	load_libs() { :; }
+	luci_wan_sync() { return 1; }
+	is_mounted() { grep -q " $1\$" "$FAKE_STATE" 2>/dev/null; }
+	seed_candidates() { echo /dev/fake-seed; }
+	classify_seed_dev() { echo hypervisor; }
+	seed_label() { echo cidata; }
+	if [ "$1" = removable ]; then seed_dev_removable() { :; }; else seed_dev_removable() { return 1; }; fi
+	create_ci_admin() { :; }
+	install_ssh_keys() { :; }
+	install_key_lines() { :; }
+	set_root_password() { :; }
+	ensure_root_not_open() { :; }
+	ensure_root_rpcd_login() { :; }
+	apply_network_config() { echo net >> "$FAKE_EV"; }
+	start_service
+) 2>>"$ST/stderr"
+boot_reset() {
+	rm -rf "$ST/ev" "$ST/mounts" "$ST/log" "$ST/state" "$ST/ready" "$ST/firstboot.sh" "$ST/cidata"
+	: > "$ST/ev"
+}
+BSWC_ID=$(get_seed_instance_id "$BSWC/meta-data")
+
+# Провижн: строка connect — одна команда с WAIT=0, стирание сида доходит до wipefs.
+boot_reset
+run_boot provision
+assert_eq "start_service провижн: umount раньше команд, стирание сида прошло" \
+"mount-ro /dev/fake-seed
+net
+umount
+stvor-agent connect URL=https://stvor.example.test WAIT=0 code-ok
+mount-rw /dev/fake-seed
+umount
+wipefs -a /dev/fake-seed" "$(cat "$ST/ev")"
+assert_eq "start_service провижн: instance-id записан" "$BSWC_ID" "$(cat "$ST/state/instance-id")"
+assert_eq "start_service провижн: скрипт с кодом удалён, сид снят" "no no" \
+"$([ -e "$ST/firstboot.sh" ] && echo yes || echo no) $([ -e "$ST/cidata" ] && echo yes || echo no)"
+assert_eq "start_service провижн: кода нет ни в журнале, ни в stderr" "0" \
+"$(cat "$ST/log" "$ST/stderr" | grep -c 'stc_')"
+[ -e "$ST/ready" ] && pass "start_service провижн: ready выставлен" || die "start_service провижн: ready выставлен"
+
+# Повторная загрузка того же сида и отказ съёмному носителю: скрипт,
+# положенный в образ, выполняется тоже после размонтирования.
+for br in per-boot removable; do
+	boot_reset
+	mkdir -p "$ST/state"
+	if [ "$br" = per-boot ]; then echo "$BSWC_ID" > "$ST/state/instance-id"; else echo other-id > "$ST/state/instance-id"; fi
+	printf '#!/bin/sh\necho cmd >> "$FAKE_EV"\n' > "$ST/firstboot.sh"
+	run_boot "$br"
+	assert_eq "start_service $br: umount раньше команд" \
+"mount-ro /dev/fake-seed
+umount
+cmd" "$(cat "$ST/ev")"
+done
+rm -rf "$ST"
 
 [ "$fail" = 0 ] && { echo "ALL PASS"; exit 0; } || { echo "FAILURES"; exit 1; }

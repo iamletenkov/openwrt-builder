@@ -235,15 +235,96 @@ read_dns_any() {
 # Бисквит кладёт firstboot-команды манифеста именно сюда. Агент читал только
 # /usr/libexec/bisquite-firstboot.sh, который наполняет Proxmox-адаптер, —
 # поэтому команды из `bs device write` не выполнялись никогда.
+#
+# parse_runcmd <user-data> skipped → по строке на пропущенный элемент:
+# `multiline` (блочный `|`/`>`) или `malformed` (незакрытые кавычки,
+# неподдержанное экранирование). Содержимое элемента не выводится: в нём бывают
+# секреты (код подключения), а вывод идёт в журнал.
+#
+# Элемент — строка `- …` и все следующие строки с отступом БОЛЬШЕ, чем у его
+# `-`. Отступ проверяется раньше, чем `-`: yaml.dump сворачивает длинную строку
+# на ширине 80, и продолжение может начаться с `-n`/`-d`/`-a` (`[ -n "$seed" ]`,
+# `mktemp -d`, `wipefs -a`) — это часть команды, а не новый элемент.
+# Склейка — через пробел (свёрнутый plain и кавычки); `'…'` — кавычки снимаются,
+# `''` → `'`; `"…"` — кавычки снимаются, `\"`, `\\`, `\ ` и `\` в конце строки
+# (перенос без пробела) — как пишет PyYAML. Прочие экранирования не
+# поддержаны: элемент пропускается, а не исполняется не тем, что написал автор.
 parse_runcmd() {
-	awk '
+	awk -v mode="${2:-}" '
 		function ind(s){match(s,/^[ ]*/);return RLENGTH}
-		/^[ ]*runcmd:[ ]*$/ { in_rc = 1; rc_ind = ind($0); next }
-		in_rc && /^[ ]*[a-z_]+:/ && ind($0) <= rc_ind { in_rc = 0 }
-		in_rc && /^[ ]*-/ {
-			v = $0; sub(/^[ ]*-[ ]*/, "", v)
-			if (v != "") print v
+		function skip(why) { if (mode == "skipped") print why }
+		# odd_bs(s) → 1, если s кончается нечётным числом обратных косых
+		function odd_bs(s,   n) {
+			n = 0
+			while (n < length(s) && substr(s, length(s) - n, 1) == "\\") n++
+			return n % 2
 		}
+		function add(s) {
+			sub(/^[ ]+/, "", s)
+			if (buf == "") { buf = s; return }
+			if (substr(buf, 1, 1) == "\"" && odd_bs(buf))
+				buf = substr(buf, 1, length(buf) - 1) s
+			else
+				buf = buf " " s
+		}
+		function unq1(s,   i, c, n, r) {
+			n = length(s); r = ""
+			for (i = 2; i <= n; i++) {
+				c = substr(s, i, 1)
+				if (c != q) { r = r c; continue }
+				if (i < n && substr(s, i + 1, 1) == q) { r = r q; i++; continue }
+				if (i == n) return r
+				break
+			}
+			bad = 1; return ""
+		}
+		function unq2(s,   i, c, e, n, r) {
+			n = length(s); r = ""
+			for (i = 2; i <= n; i++) {
+				c = substr(s, i, 1)
+				if (c == "\\") {
+					e = substr(s, i + 1, 1); i++
+					if (e == "\\" || e == "\"" || e == " ") { r = r e; continue }
+					break
+				}
+				if (c != "\"") { r = r c; continue }
+				if (i == n) return r
+				break
+			}
+			bad = 1; return ""
+		}
+		function flush(   c, v) {
+			if (!open) return
+			open = 0; v = buf; buf = ""; bad = 0
+			c = substr(v, 1, 1)
+			if (c == "|" || c == ">") { skip("multiline"); return }
+			if (c == q) v = unq1(v)
+			else if (c == "\"") v = unq2(v)
+			if (bad) { skip("malformed"); return }
+			if (v != "" && mode == "") print v
+		}
+		BEGIN { q = sprintf("%c", 39) }
+		{ line = $0; sub(/[ \t\r]+$/, "", line) }
+		!in_rc {
+			if (line ~ /^[ ]*runcmd:$/) { in_rc = 1; rc_ind = ind(line) }
+			next
+		}
+		line == "" { next }
+		{ n = ind(line); c1 = substr(buf, 1, 1) }
+		# Продолжение элемента — по отступу, до проверки на `-`. Строка-комментарий
+		# внутри кавычек — текст, вне их — комментарий YAML.
+		open && n > it_ind {
+			if (line ~ /^[ ]*#/ && c1 != q && c1 != "\"") next
+			add(line); next
+		}
+		line ~ /^[ ]*#/ { next }
+		n >= rc_ind && (line ~ /^[ ]*-$/ || line ~ /^[ ]*- /) {
+			flush(); open = 1; it_ind = n
+			v = line; sub(/^[ ]*-[ ]*/, "", v); buf = v
+			next
+		}
+		n <= rc_ind { flush(); in_rc = 0 }
+		END { flush() }
 	' "$1"
 }
 

@@ -235,8 +235,20 @@ set_root_password() {
 # и его выполняет уже существующий run_firstboot_commands — с логированием и
 # удалением после запуска.
 stage_runcmd() {
-	local cmds
+	local cmds why
 	[ -s "$FIRSTBOOT_SCRIPT" ] && return 0
+
+	# О пропущенных элементах — строка в журнал без содержимого: в командах
+	# бывают секреты (код подключения Stvor).
+	while read -r why; do
+		case "$why" in
+			'') ;;
+			multiline) logger -t "$PROG" "multiline runcmd entry skipped" ;;
+			*)         logger -t "$PROG" "malformed runcmd entry skipped" ;;
+		esac
+	done <<EOF
+$(parse_runcmd "$1" skipped)
+EOF
 
 	cmds=$(parse_runcmd "$1")
 	[ -n "$cmds" ] || return 0
@@ -777,7 +789,7 @@ ensure_root_not_open() {
 
 # --------------------------------------------------------------- main --
 start_service() {
-	local SEED_ID prev_id
+	local SEED_ID prev_id net_ok
 	if [ -e "$RESIZE_REBOOT_FLAG" ]; then
 		logger -t "$PROG" "root resize reboot pending — skip this boot"
 		return 0
@@ -794,6 +806,11 @@ start_service() {
 		/etc/init.d/firewall reload >/dev/null 2>&1 || true
 	fi
 
+	# Команды первой загрузки выполняются при РАЗМОНТИРОВАННОМ сиде (как у
+	# cloud-init, который монтирует том только на время чтения): /mnt/cidata
+	# смонтирован ro, и команда стирания сида, монтирующая то же устройство на
+	# запись, получила бы отказ ядра (EBUSY) — `if mount …` молча пропустил бы
+	# стирание, и сид с паролями и кодом подключения остался бы на носителе.
 	if ! mount_cidata; then
 		logger -t "$PROG" "trusted cidata not found — skip"
 		# Скрипт, положенный в образ при деплое (bisquite + virt-customize),
@@ -809,9 +826,9 @@ start_service() {
 
 	if already_provisioned "$SEED_ID"; then
 		logger -t "$PROG" "instance '$SEED_ID' already provisioned — per-boot only"
+		umount_cidata
 		run_firstboot_commands
 		mark_cloudinit_ready
-		umount_cidata
 		return 0
 	fi
 
@@ -819,17 +836,22 @@ start_service() {
 	if [ -n "$prev_id" ] && seed_dev_removable "$SEED_DEV" && \
 	   [ "$(uci -q get wrt_cloudinit.main.allow_removable_reprovision)" != 1 ]; then
 		logger -t "$PROG" "seed on removable $SEED_DEV has new instance '$SEED_ID' (was '$prev_id'): reprovision refused, set wrt_cloudinit.main.allow_removable_reprovision=1 to allow"
+		umount_cidata
 		run_firstboot_commands
 		mark_cloudinit_ready
-		umount_cidata
 		return 0
 	fi
 
 	logger -t "$PROG" "provisioning instance '$SEED_ID' from $SEED_DEV ($SEED_CLASS)"
+	# apply_user_data читает сид и выгружает runcmd в $FIRSTBOOT_SCRIPT — до
+	# размонтирования; сами команды — после него.
 	apply_user_data
 	ensure_root_not_open
 	ensure_root_rpcd_login
-	if apply_network_config; then
+	net_ok=0
+	apply_network_config && net_ok=1
+	umount_cidata
+	if [ "$net_ok" = 1 ]; then
 		run_firstboot_commands
 		mark_provisioned "$SEED_ID" && \
 			logger -t "$PROG" "instance '$SEED_ID' provisioned"
@@ -838,7 +860,6 @@ start_service() {
 	fi
 
 	mark_cloudinit_ready
-	umount_cidata
 }
 
 stop_service() { :; }
