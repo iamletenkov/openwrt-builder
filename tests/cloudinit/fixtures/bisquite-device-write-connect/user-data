@@ -1,0 +1,29 @@
+#cloud-config
+hostname: wrt-1
+manage_etc_hosts: true
+users:
+- name: ops
+  hashed_passwd: $6$rounds=656000$s5B3cu83ENhzb8uT$uHrISajdHHElE/8Q0LO./JDY9lVOcADbuusE.sE3K/mRizTIwXq.68/0ANAkXQjwh/EsgMlLUAFns1q/KHUr00
+  groups: sudo
+  shell: /bin/bash
+  lock_passwd: false
+  sudo: ALL=(ALL) NOPASSWD:ALL
+chpasswd:
+  list:
+  - root:$6$rounds=656000$16hsRHD2Rf5PBmH1$hbhom.tMyeuRtDwzx6Gy0GmdtueRfWunxG1IzkNSLGiki0pZV5aEER3vAcaGng.Ggp0fzn87Ynw9BYpYvDpLS/
+  expire: false
+ssh_pwauth: true
+package_update: false
+package_upgrade: false
+runcmd:
+- printf '%s' 'stc_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' | stvor-agent connect
+  URL=https://stvor.example.test WAIT=0
+- touch /var/lib/cloud/instance/manual-clean
+- seed=$(findfs LABEL=cidata 2>/dev/null || true); if [ -n "$seed" ]; then mnt=$(mktemp
+  -d); if mount "$seed" "$mnt"; then rm -f "$mnt/user-data" "$mnt/meta-data" "$mnt/network-config";
+  umount "$mnt" && wipefs -a "$seed"; fi; rmdir "$mnt"; fi
+growpart:
+  mode: auto
+  devices:
+  - /
+resize_rootfs: true
